@@ -222,15 +222,22 @@ operation, not a side effect of inspection.
 
 - Unit tests live alongside their package (`*_test.go`), no separate test
   directory. Run with `go test ./...`.
-- There is currently no automated coverage for the OpenAI adapter's
-  reasoning-handling wiring or for `MergeConsecutiveUserTurns`/
-  `StripSessionReasoningDetails` - those have only been validated by manual
-  live runs against `testws/`. See TODOS.md.
+- `pkg/agent/openai_model_test.go` covers the OpenAI adapter's
+  reasoning-handling wiring (`reasoningEgress` modes, `ReasoningField`,
+  `SupportsReasoningDetails`, `ExtraBody`) using `httptest`-mocked
+  wire-payload assertions, plus `StripReasoningDetails`/
+  `StripSessionReasoningDetails`. `MergeConsecutiveUserTurns` is covered in
+  `pkg/agent/session_store_test.go`. Extend these before reaching for a
+  scratch program - see LOCAL_TESTING.md.
+- What automated tests *can't* cover: whether a real provider actually
+  accepts a given request shape (a mocked server only proves what we sent,
+  not what a real backend does with it). That still requires a live run -
+  see LOCAL_TESTING.md.
 - `testws/` and `test_agents/` are both usable for manual verification;
   `testws/` is gitignored (safe to leave real API keys in its
   `runtime.json` files), `test_agents/` is committed (keep it free of
-  secrets - it's meant as a format-reference fixture, e.g. for what a
-  properly-shaped `session.jsonl` looks like).
+  secrets) and is a complete, working example workspace (`AGENTS.md`,
+  `IDENTITY.md`, `runtime.json`, `session.jsonl`), not just a fixture.
 
 ## Important Gotchas
 

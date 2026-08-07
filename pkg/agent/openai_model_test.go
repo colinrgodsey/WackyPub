@@ -1,0 +1,371 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/genai"
+)
+
+func reasoningDetailPart(text string, extra map[string]any) *genai.Part {
+	detail := map[string]any{"type": "reasoning.text", "text": text, "index": 0}
+	for k, v := range extra {
+		detail[k] = v
+	}
+	return &genai.Part{
+		Text:         text,
+		Thought:      true,
+		PartMetadata: map[string]any{"openai.reasoning_detail": detail},
+	}
+}
+
+func TestStripReasoningDetails(t *testing.T) {
+	t.Run("nil content", func(t *testing.T) {
+		if got := StripReasoningDetails(nil); got != nil {
+			t.Errorf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("no reasoning_detail metadata: returned unchanged", func(t *testing.T) {
+		c := &genai.Content{Role: "model", Parts: []*genai.Part{{Text: "plain answer"}}}
+		got := StripReasoningDetails(c)
+		if got != c {
+			t.Errorf("expected the same pointer back when nothing needs stripping")
+		}
+	})
+
+	t.Run("readable block: metadata stripped, text kept", func(t *testing.T) {
+		c := &genai.Content{
+			Role: "model",
+			Parts: []*genai.Part{
+				reasoningDetailPart("readable summary", nil),
+				{Text: "final answer"},
+			},
+		}
+		got := StripReasoningDetails(c)
+		if len(got.Parts) != 2 {
+			t.Fatalf("expected 2 parts, got %d", len(got.Parts))
+		}
+		if got.Parts[0].Text != "readable summary" || !got.Parts[0].Thought {
+			t.Errorf("expected readable thought text kept: %+v", got.Parts[0])
+		}
+		if got.Parts[0].PartMetadata != nil {
+			t.Errorf("expected PartMetadata stripped, got %+v", got.Parts[0].PartMetadata)
+		}
+		if got.Parts[1].Text != "final answer" {
+			t.Errorf("expected final answer part untouched: %+v", got.Parts[1])
+		}
+	})
+
+	t.Run("text-less encrypted block: part dropped entirely", func(t *testing.T) {
+		encrypted := &genai.Part{
+			Thought:      true,
+			PartMetadata: map[string]any{"openai.reasoning_detail": map[string]any{"type": "reasoning.encrypted", "data": "opaque"}},
+		}
+		c := &genai.Content{Role: "model", Parts: []*genai.Part{encrypted, {Text: "final answer"}}}
+		got := StripReasoningDetails(c)
+		if len(got.Parts) != 1 {
+			t.Fatalf("expected the text-less encrypted part to be dropped, got %d parts: %+v", len(got.Parts), got.Parts)
+		}
+		if got.Parts[0].Text != "final answer" {
+			t.Errorf("expected the remaining part to be the final answer: %+v", got.Parts[0])
+		}
+	})
+
+	t.Run("other PartMetadata keys are preserved", func(t *testing.T) {
+		p := reasoningDetailPart("summary", nil)
+		p.PartMetadata["some.other.key"] = "keep me"
+		c := &genai.Content{Role: "model", Parts: []*genai.Part{p}}
+		got := StripReasoningDetails(c)
+		if got.Parts[0].PartMetadata["openai.reasoning_detail"] != nil {
+			t.Errorf("expected reasoning_detail key removed")
+		}
+		if got.Parts[0].PartMetadata["some.other.key"] != "keep me" {
+			t.Errorf("expected unrelated metadata key preserved, got %+v", got.Parts[0].PartMetadata)
+		}
+	})
+}
+
+func TestStripSessionReasoningDetails(t *testing.T) {
+	tempDir := t.TempDir()
+
+	turns := []*genai.Content{
+		genai.NewContentFromText("hello", "user"),
+		{Role: "model", Parts: []*genai.Part{reasoningDetailPart("thinking about it", nil), {Text: "hi there"}}},
+		genai.NewContentFromText("another question", "user"),
+		{Role: "model", Parts: []*genai.Part{{Text: "plain answer, no reasoning"}}},
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("failed to write session turns: %v", err)
+	}
+
+	modified, err := StripSessionReasoningDetails(tempDir)
+	if err != nil {
+		t.Fatalf("StripSessionReasoningDetails failed: %v", err)
+	}
+	if modified != 1 {
+		t.Errorf("expected 1 turn modified, got %d", modified)
+	}
+
+	reread, err := ReadSessionTurns(tempDir)
+	if err != nil {
+		t.Fatalf("failed to re-read session turns: %v", err)
+	}
+	if len(reread) != 4 {
+		t.Fatalf("expected 4 turns after stripping, got %d", len(reread))
+	}
+	for _, turn := range reread {
+		for _, p := range turn.Parts {
+			if _, ok := p.PartMetadata["openai.reasoning_detail"]; ok {
+				t.Errorf("expected no reasoning_detail metadata to survive: %+v", p)
+			}
+		}
+	}
+	if ContentText(reread[1]) != "hi there" {
+		t.Errorf("expected readable answer text preserved, got %q", ContentText(reread[1]))
+	}
+
+	t.Run("no-op when nothing has reasoning_details", func(t *testing.T) {
+		cleanDir := t.TempDir()
+		clean := []*genai.Content{genai.NewContentFromText("hi", "user"), genai.NewContentFromText("hello", "model")}
+		if err := WriteSessionTurns(cleanDir, clean); err != nil {
+			t.Fatalf("failed to write session turns: %v", err)
+		}
+		modified, err := StripSessionReasoningDetails(cleanDir)
+		if err != nil {
+			t.Fatalf("StripSessionReasoningDetails failed: %v", err)
+		}
+		if modified != 0 {
+			t.Errorf("expected 0 turns modified, got %d", modified)
+		}
+	})
+}
+
+// captureLastRequestBody starts an httptest server that records the JSON
+// body of every request it receives and always responds with a minimal,
+// valid, non-reasoning chat completion.
+func captureLastRequestBody(t *testing.T) (*httptest.Server, *[]map[string]any) {
+	t.Helper()
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("failed to unmarshal outgoing request body: %v\nraw: %s", err, raw)
+		}
+		bodies = append(bodies, body)
+
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &bodies
+}
+
+func historyWithThought(reasoning, answer string) []*genai.Content {
+	return []*genai.Content{
+		genai.NewContentFromText("what's the weather?", "user"),
+		{
+			Role: "model",
+			Parts: []*genai.Part{
+				{Text: reasoning, Thought: true},
+				{Text: answer},
+			},
+		},
+		genai.NewContentFromText("and tomorrow?", "user"),
+	}
+}
+
+func generateOnce(t *testing.T, m model.LLM, contents []*genai.Content) {
+	t.Helper()
+	req := &model.LLMRequest{Model: m.Name(), Contents: contents}
+	for _, err := range m.GenerateContent(context.Background(), req, false) {
+		if err != nil {
+			t.Fatalf("GenerateContent failed: %v", err)
+		}
+	}
+}
+
+func lastAssistantMessage(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	msgs, ok := body["messages"].([]any)
+	if !ok {
+		t.Fatalf("expected messages array in body: %+v", body)
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(map[string]any)
+		if ok && msg["role"] == "assistant" {
+			return msg
+		}
+	}
+	t.Fatalf("no assistant message found in body: %+v", body)
+	return nil
+}
+
+func TestNewOpenAIModel_ReasoningEgress(t *testing.T) {
+	tests := []struct {
+		name   string
+		egress string
+		check  func(t *testing.T, assistantMsg map[string]any)
+	}{
+		{
+			name:   "native (default): reasoning as its own field, not merged into content",
+			egress: "",
+			check: func(t *testing.T, msg map[string]any) {
+				if msg["reasoning_content"] != "thinking hard" {
+					t.Errorf("expected reasoning_content field, got %+v", msg)
+				}
+				if msg["content"] != "the answer" {
+					t.Errorf("expected content to be just the answer, got %+v", msg["content"])
+				}
+			},
+		},
+		{
+			name:   "think_tags: reasoning folded into content, no extra field",
+			egress: "think_tags",
+			check: func(t *testing.T, msg map[string]any) {
+				if _, ok := msg["reasoning_content"]; ok {
+					t.Errorf("expected no reasoning_content field in think_tags mode, got %+v", msg)
+				}
+				content, _ := msg["content"].(string)
+				if !strings.Contains(content, "<think>") || !strings.Contains(content, "thinking hard") {
+					t.Errorf("expected content to contain a <think> block with the reasoning text, got %q", content)
+				}
+			},
+		},
+		{
+			name:   "omit: no reasoning sent in any shape",
+			egress: "omit",
+			check: func(t *testing.T, msg map[string]any) {
+				if _, ok := msg["reasoning_content"]; ok {
+					t.Errorf("expected no reasoning_content field in omit mode, got %+v", msg)
+				}
+				content, _ := msg["content"].(string)
+				if strings.Contains(content, "thinking hard") {
+					t.Errorf("expected reasoning text to be absent from content, got %q", content)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, bodies := captureLastRequestBody(t)
+			m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL, ReasoningEgress: tt.egress})
+			generateOnce(t, m, historyWithThought("thinking hard", "the answer"))
+
+			if len(*bodies) != 1 {
+				t.Fatalf("expected 1 request, got %d", len(*bodies))
+			}
+			tt.check(t, lastAssistantMessage(t, (*bodies)[0]))
+		})
+	}
+}
+
+func TestNewOpenAIModel_ReasoningField(t *testing.T) {
+	srv, bodies := captureLastRequestBody(t)
+	m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL, ReasoningField: "reasoning"})
+	generateOnce(t, m, historyWithThought("thinking hard", "the answer"))
+
+	msg := lastAssistantMessage(t, (*bodies)[0])
+	if msg["reasoning"] != "thinking hard" {
+		t.Errorf("expected custom 'reasoning' field to carry the thought text, got %+v", msg)
+	}
+	if _, ok := msg["reasoning_content"]; ok {
+		t.Errorf("expected no default reasoning_content field when a custom ReasoningField is set, got %+v", msg)
+	}
+}
+
+func TestNewOpenAIModel_ExtraBody(t *testing.T) {
+	srv, bodies := captureLastRequestBody(t)
+	m := NewOpenAIModel(&RuntimeConfig{
+		Model:     "test-model",
+		Endpoint:  srv.URL,
+		ExtraBody: map[string]any{"reasoning": map[string]any{"effort": "high"}},
+	})
+	generateOnce(t, m, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	body := (*bodies)[0]
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected top-level 'reasoning' key from ExtraBody, got %+v", body)
+	}
+	if reasoning["effort"] != "high" {
+		t.Errorf("expected reasoning.effort=high from ExtraBody, got %+v", reasoning)
+	}
+}
+
+// TestNewOpenAIModel_SupportsReasoningDetails exercises the exact round trip
+// that broke against OpenRouter's "auto" routing (DECISIONS.md D6): a
+// response carrying structured reasoning_details blocks is captured on
+// ingest, then replayed as history on request 2. Whether the block array
+// actually gets resent is controlled by SupportsReasoningDetails.
+func TestNewOpenAIModel_SupportsReasoningDetails(t *testing.T) {
+	for _, supports := range []bool{true, false} {
+		t.Run(map[bool]string{true: "enabled", false: "disabled"}[supports], func(t *testing.T) {
+			var requestCount int
+			var secondBody map[string]any
+
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requestCount++
+				w.Header().Set("Content-Type", "application/json")
+				if requestCount == 1 {
+					// First response: carries a structured reasoning_details block.
+					io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"first answer","reasoning_details":[{"type":"reasoning.text","text":"first thought","index":0}]},"finish_reason":"stop"}]}`)
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &secondBody); err != nil {
+					t.Fatalf("failed to unmarshal second request body: %v", err)
+				}
+				io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"second answer"},"finish_reason":"stop"}]}`)
+			}))
+			defer srv.Close()
+
+			m := NewOpenAIModel(&RuntimeConfig{
+				Model:                    "test-model",
+				Endpoint:                 srv.URL,
+				ReasoningField:           "reasoning",
+				SupportsReasoningDetails: supports,
+			})
+
+			// Request 1: get a response with reasoning_details, capture it.
+			req1 := &model.LLMRequest{Model: m.Name(), Contents: []*genai.Content{genai.NewContentFromText("hi", "user")}}
+			var firstContent *genai.Content
+			for resp, err := range m.GenerateContent(context.Background(), req1, false) {
+				if err != nil {
+					t.Fatalf("first GenerateContent failed: %v", err)
+				}
+				if resp != nil {
+					firstContent = resp.Content
+				}
+			}
+			if firstContent == nil {
+				t.Fatalf("expected a response from the first call")
+			}
+
+			// Request 2: replay the captured content as history.
+			history := []*genai.Content{genai.NewContentFromText("hi", "user"), firstContent, genai.NewContentFromText("again?", "user")}
+			generateOnce(t, m, history)
+
+			if secondBody == nil {
+				t.Fatalf("expected a second request to have been captured")
+			}
+			msg := lastAssistantMessage(t, secondBody)
+
+			_, hasDetails := msg["reasoning_details"]
+			if supports && !hasDetails {
+				t.Errorf("expected reasoning_details to be replayed when SupportsReasoningDetails is true, got %+v", msg)
+			}
+			if !supports && hasDetails {
+				t.Errorf("expected no reasoning_details replayed when SupportsReasoningDetails is false, got %+v", msg)
+			}
+		})
+	}
+}

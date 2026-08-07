@@ -1,11 +1,16 @@
 # LOCAL_TESTING.md
 
-How manual/live testing has actually been done in this repo so far. There is
-no mocked LLM backend and, as of writing, no automated coverage for the
-OpenAI adapter's reasoning-handling wiring (see TODOS.md) - correctness has
-been verified by running the built binary against a real workspace and
-either a real backend or a local `httptest` server. This file documents that
-workflow so it doesn't have to be rediscovered.
+How manual/live testing has actually been done in this repo. There is no
+mocked LLM backend for full end-to-end runs, and `go test ./...` can't tell
+you whether a real provider actually *accepts* a given request shape (that
+took a live 404 against OpenRouter to discover - see DECISIONS.md D6). The
+`httptest`-mocked wire-payload tests in `pkg/agent/openai_model_test.go`
+(`TestNewOpenAIModel_ReasoningEgress`, `TestNewOpenAIModel_SupportsReasoningDetails`,
+etc.) do cover the wiring itself now - see them for the pattern before
+writing a throwaway scratch program for the same kind of check. This file
+covers what's left: driving the built binary against a real workspace and
+either a real backend or an ad hoc `httptest` server, for the things only a
+live call (or a full CLI run) can confirm.
 
 ## Two workspaces, two different jobs
 
@@ -142,11 +147,17 @@ skipped the merged line on the next read).
 
 ## Verifying the outgoing wire payload without spending real API credits
 
-For changes to `pkg/agent/openai_model.go` or the `adk-utils-go` fork's
-request-building logic, the fastest way to check the exact JSON sent to the
-provider is a throwaway Go program with an `httptest` server standing in for
-the backend - no real API call, no cost, and it shows the literal bytes on
-the wire instead of inferring behavior from the response:
+`pkg/agent/openai_model_test.go` already covers this for the wiring that
+exists today (`reasoningEgress` modes, `ReasoningField`,
+`SupportsReasoningDetails`, `ExtraBody`) using exactly this technique as
+real `go test` cases - extend those tables first for anything that fits the
+same shape (a new `RuntimeConfig` field affecting the outgoing request).
+
+For something that doesn't fit an existing test's shape, or a one-off check
+while debugging, the same technique works as a throwaway Go program with an
+`httptest` server standing in for the backend - no real API call, no cost,
+and it shows the literal bytes on the wire instead of inferring behavior
+from the response:
 
 ```go
 package main
@@ -195,10 +206,10 @@ func main() {
 ```
 
 Run with `go run /tmp/whatever.go` and delete it afterward - this is a
-scratch verification tool, not something to commit. This is how the
-`reasoningEgress` modes (native/think_tags/omit) and the
-`StripReasoningDetails`/`StripSessionReasoningDetails` behavior were all
-confirmed byte-for-byte before ever touching a real backend.
+scratch verification tool, not something to commit. If what you learn from
+it is worth keeping, turn it into a `_test.go` case using
+`captureLastRequestBody`/`generateOnce`/`lastAssistantMessage` from
+`pkg/agent/openai_model_test.go` rather than leaving it as a one-off script.
 
 ## When something needs a real backend
 

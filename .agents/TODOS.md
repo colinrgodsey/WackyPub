@@ -46,19 +46,6 @@ tool use via ADK's flow, etc.) or remove it - right now it's dead code that
 still has to be kept in sync with ADK API changes (it was part of the v1 ->
 v2 migration effort) for no exercised benefit.
 
-## No automated test coverage for reasoning-handling wiring
-
-`MergeConsecutiveUserTurns`, `StripReasoningDetails`,
-`StripSessionReasoningDetails`, and the `RuntimeConfig` -> `adkopenai.Config`
-field mapping in `NewOpenAIModel` have all been validated by hand (manual
-`httptest`-mocked wire-payload inspection, and live runs against real
-OpenRouter/llama.cpp backends) but none of that is captured as `_test.go`
-files. If the adk-utils-go fork's wire behavior or field names change, there
-is nothing that would catch a silent regression except another manual run.
-Worth adding at minimum: a mocked-server test asserting the exact outgoing
-JSON for each `reasoningEgress` mode, and a unit test for
-`MergeConsecutiveUserTurns`'s merge/no-merge boundary cases.
-
 ## `session.jsonl` has no defense against the missing-trailing-newline corruption mode
 
 Documented in `.agents/AGENTS.md`'s Gotchas section and hit for real during
