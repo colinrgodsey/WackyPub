@@ -1,0 +1,222 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"google.golang.org/genai"
+)
+
+// AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
+type AgentSDK struct {
+	WorkspaceDir string
+}
+
+// NewSDK creates an SDK instance bound to a workspace directory.
+func NewSDK(workspaceDir string) *AgentSDK {
+	if workspaceDir == "" {
+		workspaceDir = "."
+	}
+	return &AgentSDK{
+		WorkspaceDir: workspaceDir,
+	}
+}
+
+// AgentDir returns the absolute or relative path for an agent folder (<ws_dir>/<agent_id>).
+func (s *AgentSDK) AgentDir(agentID string) string {
+	return filepath.Join(s.WorkspaceDir, agentID)
+}
+
+// AddUserTurn appends a user message to <ws_dir>/<agent_id>/session.jsonl.
+// Creates the agent directory automatically if it does not exist yet.
+func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
+	if agentID == "" {
+		return fmt.Errorf("agentID cannot be empty")
+	}
+	if message == "" {
+		return fmt.Errorf("message cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return AppendSessionTurn(agentDir, "user", message)
+}
+
+// GenerateTurn loads the folder agent, checks for compaction, generates the next assistant turn,
+// prints to output if configured, and appends the assistant turn to session.jsonl.
+func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
+	}
+
+	resp, err := fa.GenerateTurn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed during turn generation for agent %q: %w", agentID, err)
+	}
+
+	return resp, nil
+}
+
+// AddAndGenerateTurn atomically appends a user message and generates the assistant response under a single lock.
+func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userMessage string) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+	if userMessage == "" {
+		return "", fmt.Errorf("userMessage cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	// 1. Append User Turn
+	if err := AppendSessionTurn(agentDir, "user", userMessage); err != nil {
+		return "", fmt.Errorf("failed to append user turn: %w", err)
+	}
+
+	// 2. Load Folder Agent & Generate Assistant Turn
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	if err != nil {
+		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
+	}
+
+	resp, err := fa.GenerateTurn(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed during turn generation for agent %q: %w", agentID, err)
+	}
+
+	return resp, nil
+}
+
+// GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.
+func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
+	return LoadFolderAgent(s.WorkspaceDir, agentID)
+}
+
+// ListAgents returns the IDs of agent directories found directly under the
+// workspace directory (see ListAgentIDs for how a directory is recognized as
+// an agent). Does not acquire any lock - it only reads directory names.
+func (s *AgentSDK) ListAgents() ([]string, error) {
+	return ListAgentIDs(s.WorkspaceDir)
+}
+
+// InspectAgent reports the on-disk state of <ws_dir>/<agent_id>: which
+// expected files are present, whether runtime.json parses, and
+// session/memory stats. Safe to call on an agent that doesn't exist yet or
+// is only partially set up - see AgentInspection.
+//
+// Does not create the agent directory as a side effect (unlike most other
+// AgentSDK methods) - if it doesn't exist, returns an AgentInspection with
+// AgentDirExists false and every other field zero-valued. If it does exist,
+// acquires the session lock for the duration of the session.jsonl read.
+func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
+		return &AgentInspection{AgentID: agentID, AgentDir: agentDir}, nil
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return InspectAgentDir(s.WorkspaceDir, agentID)
+}
+
+// ReadSession returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
+func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return ReadSessionTurns(agentDir)
+}
+
+// ReadMemory returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
+func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return ReadMemoryFile(agentDir)
+}
+
+// StripReasoningDetails permanently removes OpenRouter reasoning_details block
+// metadata (e.g. encrypted/signed reasoning tied to a specific backend
+// endpoint) from every turn in <ws_dir>/<agent_id>/session.jsonl, rewriting
+// the file in place. Readable plain-text reasoning is left untouched. Useful
+// when switching an agent from a model/endpoint that emits encrypted
+// reasoning to a different one. Returns the number of turns that were
+// modified.
+func (s *AgentSDK) StripReasoningDetails(agentID string) (int, error) {
+	if agentID == "" {
+		return 0, fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return StripSessionReasoningDetails(agentDir)
+}
+
+// CompactSession manually triggers session compaction evaluation for an agent.
+func (s *AgentSDK) CompactSession(ctx context.Context, agentID string) (bool, error) {
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return false, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	if err != nil {
+		return false, err
+	}
+	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
+}

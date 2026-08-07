@@ -1,0 +1,183 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"text/tabwriter"
+
+	"github.com/spf13/cobra"
+
+	adkAgent "github.com/colinrgodsey/WackyPubAI/pkg/agent"
+)
+
+// wackypub workspace [agent_id]
+var workspaceCmd = &cobra.Command{
+	Use:   "workspace [agent_id]",
+	Short: "Show workspace information, or diagnose a single agent's setup",
+	Long: `With no argument, lists the agent directories found under the workspace directory
+(--ws, defaults to the current directory) along with a one-line status for each: whether
+runtime.json is present and valid, how many turns are in session.jsonl, and whether MEMORY.md
+exists. A directory is recognized as an agent directory if it directly contains at least one of
+AGENTS.md, runtime.json, or session.jsonl.
+
+With an agent_id argument, reports the detailed on-disk state of that one agent: every expected
+file's presence, runtime.json's resolved path (following a symlink) and whether it parses, and
+session/memory stats - including anything that looks broken or incomplete. Works even if the
+agent directory doesn't exist yet or is only partially set up; in that case it explains what's
+missing rather than erroring, so this doubles as a guide for setting up a new agent correctly.
+
+This command is read-only: it never creates or modifies any file.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir := GetWorkspaceDir()
+		sdk := adkAgent.NewSDK(wsDir)
+
+		if len(args) == 1 {
+			return printAgentInspection(sdk, args[0])
+		}
+		return printWorkspaceOverview(sdk, wsDir)
+	},
+}
+
+func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
+	absDir, err := filepath.Abs(wsDir)
+	if err != nil {
+		absDir = wsDir
+	}
+	fmt.Printf("Workspace: %s\n", absDir)
+
+	ids, err := sdk.ListAgents()
+	if err != nil {
+		return err
+	}
+
+	if len(ids) == 0 {
+		fmt.Println("\nNo agent directories found.")
+		fmt.Println("An agent directory needs at least one of AGENTS.md, runtime.json, or session.jsonl directly inside it to be recognized.")
+		fmt.Println("Create one with, e.g.: wackypub agent <agent_id> add \"hello\"")
+		return nil
+	}
+
+	fmt.Printf("\nAgents found: %d\n\n", len(ids))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD")
+	for _, id := range ids {
+		insp, err := sdk.InspectAgent(id)
+		if err != nil {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, "error", "-", "-")
+			continue
+		}
+
+		runtimeStatus := "missing"
+		if insp.RuntimeJSONExists {
+			if insp.RuntimeJSONValid {
+				runtimeStatus = "ok"
+			} else {
+				runtimeStatus = "invalid"
+			}
+		}
+
+		turns := "-"
+		if insp.SessionJSONLExists {
+			turns = fmt.Sprintf("%d", insp.SessionTurnCount)
+			if insp.SessionCorruptLines > 0 {
+				turns += fmt.Sprintf(" (%d corrupt)", insp.SessionCorruptLines)
+			}
+		}
+
+		memory := "no"
+		if insp.MemoryMDExists {
+			memory = "yes"
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory)
+	}
+	return w.Flush()
+}
+
+func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
+	insp, err := sdk.InspectAgent(agentID)
+	if err != nil {
+		return err
+	}
+
+	if !insp.AgentDirExists {
+		fmt.Printf("Agent %q does not exist yet at %s.\n\n", agentID, insp.AgentDir)
+		fmt.Println("To create it, add at minimum:")
+		fmt.Printf("  %s/runtime.json   LLM endpoint/model config - see docs/agents.md §3\n", insp.AgentDir)
+		fmt.Println("AGENTS.md is optional (falls back to a generic \"You are agent <id>.\" prompt if missing).")
+		fmt.Printf("\nThen run: wackypub agent %s prompt \"...\"\n", agentID)
+		return nil
+	}
+
+	fmt.Printf("Agent: %s\n", insp.AgentID)
+	fmt.Printf("Directory: %s\n\n", insp.AgentDir)
+
+	fmt.Println("Files:")
+	fmt.Printf("  AGENTS.md      %s\n", presence(insp.AgentsMDExists))
+	fmt.Printf("  MEMORY.md      %s\n", presence(insp.MemoryMDExists))
+
+	if !insp.RuntimeJSONExists {
+		fmt.Println("  runtime.json   missing")
+	} else {
+		runtimeLine := "present"
+		if insp.RuntimeJSONIsSymlink {
+			if insp.RuntimeJSONResolved != "" {
+				runtimeLine += fmt.Sprintf(" (symlink -> %s)", insp.RuntimeJSONResolved)
+			} else {
+				runtimeLine += " (symlink, broken - target does not resolve)"
+			}
+		}
+		if insp.RuntimeJSONValid {
+			runtimeLine += ", valid"
+		} else {
+			runtimeLine += ", INVALID"
+		}
+		fmt.Printf("  runtime.json   %s\n", runtimeLine)
+	}
+
+	if !insp.SessionJSONLExists {
+		fmt.Println("  session.jsonl  missing (no turns yet)")
+	} else {
+		sessionLine := fmt.Sprintf("present, %d turn(s)", insp.SessionTurnCount)
+		if insp.SessionCorruptLines > 0 {
+			sessionLine += fmt.Sprintf(", %d line(s) failed to parse and were skipped", insp.SessionCorruptLines)
+		}
+		fmt.Printf("  session.jsonl  %s\n", sessionLine)
+	}
+
+	var issues []string
+	if !insp.RuntimeJSONExists {
+		issues = append(issues, "runtime.json is missing - generation will fail until one is added (see docs/agents.md §3 for the schema).")
+	} else if !insp.RuntimeJSONValid {
+		issues = append(issues, fmt.Sprintf("runtime.json failed to parse: %s", insp.RuntimeJSONError))
+	}
+	if insp.RuntimeJSONIsSymlink && insp.RuntimeJSONResolved == "" {
+		issues = append(issues, "runtime.json is a symlink that does not resolve to an existing file.")
+	}
+	if insp.SessionCorruptLines > 0 {
+		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.SessionCorruptLines))
+	}
+
+	if len(issues) > 0 {
+		fmt.Println("\nIssues:")
+		for _, issue := range issues {
+			fmt.Printf("  - %s\n", issue)
+		}
+	}
+
+	return nil
+}
+
+func presence(exists bool) string {
+	if exists {
+		return "present"
+	}
+	return "missing"
+}
+
+func init() {
+	RootCmd.AddCommand(workspaceCmd)
+}
