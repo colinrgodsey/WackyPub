@@ -11,13 +11,25 @@ import (
 	"google.golang.org/genai"
 )
 
-const CompactionDirectivePrompt = `You are updating a persistent execution log for this session. Above is the existing <PERSISTENT_MEMORY> contents, followed by a sequence of early session turns that are about to be archived.
-Task: Generate a concise, chronological ADDENDUM to be appended directly to <PERSISTENT_MEMORY> that captures new critical developments from the archived turns.
-Guidelines:
-Do NOT repeat facts or state already captured in <PERSISTENT_MEMORY>.
-Focus on: decisions made, character actions, relationships, unresolved issues, emotions.
-Use bullet points with no header.
-Do not include conversational filler; output ONLY the raw markdown to append.`
+const CompactionDirectivePrompt = `You are a state compaction engine updating a persistent execution log for this session.
+
+Look back at the preceding conversation turns that occurred after <PERSISTENT_MEMORY>. These turns are about to be archived.
+
+### TASK
+Generate a concise, chronological ADDENDUM to append directly to <PERSISTENT_MEMORY> that captures new developments, state updates, and outcomes from these turns.
+
+### STRICT GUIDELINES
+1. **NO DUPLICATION:** Do NOT re-state facts, decisions, or rules already captured in <PERSISTENT_MEMORY> unless updating their status.
+2. **STATE UPDATES & INVALIDATION:** If a turn explicitly supersedes or completes a past item, output an explicit update (e.g., "* UPDATED: Task X is now COMPLETED / CHANGED to Y").
+3. **PRESERVE CONCRETE DATA:** Maintain exact file paths, shell commands, function names, error codes, and specific user preference overrides. Never generalize a specific file path into "the config file".
+4. **TIMESTAMPS:** Only include timestamps/dates if they explicitly appeared in the messages or tool outputs. Do not invent timestamps.
+5. **FOCUS AREAS:** Record key decisions, executed actions, structural/schema changes, discovered bugs/issues, explicitly stated user preferences, and any other memory focus given in your system prompt.
+
+### OUTPUT FORMAT RULES
+- Output **ONLY** the raw markdown bullet points to append (starting each line with '*').
+- **NO** markdown code fences.
+- **NO** introductory or concluding text (e.g., "Here is the addendum:").
+- **NO** section headers (do NOT use '#', '##', or '###').`
 
 // ReadMemoryFile reads the contents of <agent_dir>/MEMORY.md.
 // If the file does not exist, returns empty string without error.
@@ -80,6 +92,14 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	}
 	if numToCompact > len(turns) {
 		numToCompact = len(turns)
+	}
+
+	// Extend the boundary forward until it lands on a model turn, so the
+	// remaining session always starts with a fresh user turn right after the
+	// injected memory block - never a dangling assistant response whose
+	// prompting user turn was just archived away.
+	for numToCompact < len(turns) && turns[numToCompact-1].Role != "model" {
+		numToCompact++
 	}
 
 	compactTurns := turns[:numToCompact]

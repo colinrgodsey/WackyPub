@@ -18,6 +18,31 @@ func ExpandMacros(content string, agentDir string) (string, error) {
 	return expandMacrosRecursive(content, agentDir, visited, 0)
 }
 
+// RenderAgentSystemPrompt reads <wsDir>/<agentID>/AGENTS.md (falling back to
+// a generic "You are agent <id>." prompt if it doesn't exist, matching
+// LoadFolderAgent) and expands @<FILE_PATH> macros. Unlike LoadFolderAgent,
+// it does not touch runtime.json and does not construct a model - useful for
+// validating AGENTS.md/macro output independently of backend configuration.
+func RenderAgentSystemPrompt(wsDir, agentID string) (string, error) {
+	agentDir := filepath.Join(wsDir, agentID)
+	agentsPath := filepath.Join(agentDir, "AGENTS.md")
+
+	agentsData, err := os.ReadFile(agentsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			agentsData = []byte(fmt.Sprintf("You are agent %s.", agentID))
+		} else {
+			return "", fmt.Errorf("failed to read AGENTS.md at %s: %w", agentsPath, err)
+		}
+	}
+
+	expanded, err := ExpandMacros(string(agentsData), agentDir)
+	if err != nil {
+		return "", fmt.Errorf("macro expansion failed for %s: %w", agentsPath, err)
+	}
+	return expanded, nil
+}
+
 func expandMacrosRecursive(content string, agentDir string, visited map[string]bool, depth int) (string, error) {
 	if depth > 10 {
 		return content, fmt.Errorf("macro expansion depth exceeded limit of 10")

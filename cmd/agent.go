@@ -243,6 +243,46 @@ modify anything. Acquires the session lock for the duration of the read.`,
 	},
 }
 
+// wackypub agent <agent_id> render-prompt OR wackypub agent render-prompt <agent_id>
+var agentRenderPromptCmd = &cobra.Command{
+	Use:   "render-prompt [agent_id]",
+	Short: "Print the agent's fully rendered system prompt (AGENTS.md after macro expansion)",
+	Long: `Reads <ws_dir>/<agent_id>/AGENTS.md (falling back to a generic "You are agent <id>."
+prompt if it doesn't exist) and expands @<FILE_PATH> macros, then prints the fully rendered
+result to stdout - exactly the text that gets folded into the first turn of every generation
+request (see docs/agents.md §3 MEMORY.md).
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Useful for validating AGENTS.md/macro output on its own: this command does not construct a
+model and does not require runtime.json to exist or be valid, so it works even for an agent
+whose backend isn't configured yet.
+
+Read-only: does not modify anything.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir := GetWorkspaceDir()
+		sdk := adkAgent.NewSDK(wsDir)
+
+		var agentID string
+		if len(args) >= 1 {
+			agentID = args[0]
+		}
+
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> render-prompt")
+		}
+
+		prompt, err := sdk.RenderSystemPrompt(agentID)
+		if err != nil {
+			return err
+		}
+
+		fmt.Println(prompt)
+		return nil
+	},
+}
+
 // wackypub agent <agent_id> compact OR wackypub agent compact <agent_id>
 var agentCompactCmd = &cobra.Command{
 	Use:   "compact [agent_id]",
@@ -374,6 +414,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			return agentReadSessionCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "read-memory" {
 			return agentReadMemoryCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "render-prompt" {
+			return agentRenderPromptCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "compact" {
 			return agentCompactCmd.RunE(cmd, []string{agentID})
 		}
@@ -397,6 +439,7 @@ func init() {
 	agentCmd.AddCommand(agentStripReasoningCmd)
 	agentCmd.AddCommand(agentReadSessionCmd)
 	agentCmd.AddCommand(agentReadMemoryCmd)
+	agentCmd.AddCommand(agentRenderPromptCmd)
 	agentCmd.AddCommand(agentCompactCmd)
 
 	RootCmd.AddCommand(agentCmd)

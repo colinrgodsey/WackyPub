@@ -93,7 +93,7 @@ WackyPubAI/
 ├── cmd/                    # Cobra CLI command tree
 │   ├── root.go             # RootCmd, global flags (--ws, --config, -m, --api-key)
 │   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-reasoning,
-│   │                         # read-session, read-memory, compact
+│   │                         # read-session, read-memory, render-prompt, compact
 │   ├── workspace.go         # `workspace` - read-only workspace/agent diagnostic (see below)
 │   └── version.go           # `version`
 ├── pkg/
@@ -176,8 +176,9 @@ shape demanded it, not because of a general design goal.
 ### CLI command pattern: cobra subcommand + positional dispatcher
 
 Every `agent` subcommand (`add`, `generate`, `prompt`, `strip-reasoning`,
-`read-session`, `read-memory`, `compact`) is registered twice: once as a
-normal cobra subcommand (`wackypub agent add ...`), and once as a branch in
+`read-session`, `read-memory`, `render-prompt`, `compact`) is registered
+twice: once as a normal cobra subcommand (`wackypub agent add ...`), and
+once as a branch in
 `executeAgentDispatcher` so `wackypub agent <agent_id> add ...` (agent ID
 first) also works. When adding a new subcommand, wire both.
 

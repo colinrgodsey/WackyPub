@@ -183,6 +183,26 @@ func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
 	return ReadMemoryFile(agentDir)
 }
 
+// RenderSystemPrompt returns the fully rendered system prompt for an agent -
+// AGENTS.md (or the generic fallback if it doesn't exist) after
+// @<FILE_PATH> macro expansion. Does not construct a model and does not
+// require runtime.json to exist or be valid - useful for validating
+// AGENTS.md/macro output independently of backend configuration.
+func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	return RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
+}
+
 // StripReasoningDetails permanently removes OpenRouter reasoning_details block
 // metadata (e.g. encrypted/signed reasoning tied to a specific backend
 // endpoint) from every turn in <ws_dir>/<agent_id>/session.jsonl, rewriting

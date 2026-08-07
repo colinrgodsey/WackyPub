@@ -41,19 +41,9 @@ func LoadFolderAgent(wsDir string, agentID string) (*FolderAgent, error) {
 	}
 
 	// 2. Load AGENTS.md and expand macros (@<FILE_PATH>)
-	agentsPath := filepath.Join(agentDir, "AGENTS.md")
-	agentsData, err := os.ReadFile(agentsPath)
+	expandedPrompt, err := RenderAgentSystemPrompt(wsDir, agentID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			agentsData = []byte(fmt.Sprintf("You are agent %s.", agentID))
-		} else {
-			return nil, fmt.Errorf("failed to read AGENTS.md at %s: %w", agentsPath, err)
-		}
-	}
-
-	expandedPrompt, err := ExpandMacros(string(agentsData), agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("macro expansion failed for %s: %w", agentsPath, err)
+		return nil, err
 	}
 
 	// 3. Load MEMORY.md

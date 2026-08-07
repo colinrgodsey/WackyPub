@@ -260,17 +260,8 @@ Compaction prevents conversation history from exceeding LLM context boundaries w
 ### Compaction Session Context Layout
 When `estimatedTokens >= contextWindow`:
 1. **User Turn 1**: Same combined system-prompt + `<PERSISTENT_MEMORY>` text as normal generation *(identical prefix, for prompt caching)*.
-2. **Archived Turns**: First X% of turns from `session.jsonl` (`compactTurns`).
-3. **Compaction Directive (User Turn)**:
-   ```
-   You are updating a persistent execution log for this session. Above is the existing <PERSISTENT_MEMORY> contents, followed by a sequence of early session turns that are about to be archived.
-   Task: Generate a concise, chronological ADDENDUM to be appended directly to <PERSISTENT_MEMORY> that captures new critical developments from the archived turns.
-   Guidelines:
-   Do NOT repeat facts or state already captured in <PERSISTENT_MEMORY>.
-   Focus on: decisions made, character actions, relationships, unresolved issues, emotions.
-   Use bullet points with no header.
-   Do not include conversational filler; output ONLY the raw markdown to append.
-   ```
+2. **Archived Turns**: First X% of turns from `session.jsonl` (`compactTurns`), then extended forward if needed until the boundary lands right after a `model` turn — so the surviving session (`remainingTurns`) always starts fresh on a `user` turn, never a dangling assistant response whose prompting user turn just got archived.
+3. **Compaction Directive (User Turn)**: the exact wording lives in `CompactionDirectivePrompt` (`pkg/agent/compaction.go`) — read it there rather than here, since it's tuned periodically and a copy in this doc would drift out of sync. Broadly: instructs the model to generate a concise, chronological markdown ADDENDUM capturing new developments from the archived turns (without repeating what `<PERSISTENT_MEMORY>` already has), and explicitly defers to any additional memory-focus guidance the agent's own `AGENTS.md` provides (e.g. a `## Memory Focus` section — see `test_agents/bob/AGENTS.md` for an example).
 
 ### Memory Update & Session Pruning:
 1. The LLM generates a bulleted markdown **ADDENDUM** (extracted via `ContentText`, which excludes `Thought`-marked parts — reasoning never leaks into `MEMORY.md`).
@@ -371,6 +362,14 @@ wackypub agent <agent_id> read-memory
 - Prints the current contents of `<ws_dir>/<agent_id>/MEMORY.md` to stdout. Empty output (no error) if the file doesn't exist yet.
 - Read-only.
 
+### Render System Prompt (`render-prompt`)
+```bash
+wackypub agent <agent_id> render-prompt
+```
+- Prints the fully rendered system prompt — `AGENTS.md` (or the generic fallback if missing) after `@<FILE_PATH>` macro expansion — exactly the text that becomes part of the first turn on every generation (see [MEMORY.md](#memorymd)).
+- Does **not** construct a model and does not require `runtime.json` to exist or be valid — works for validating `AGENTS.md`/macro output even before the agent's backend is configured.
+- Read-only.
+
 ### Compact (`compact`)
 ```bash
 wackypub agent <agent_id> compact
@@ -435,6 +434,10 @@ turns, err := sdk.ReadSession("wizard")
 
 // Read memory file (MEMORY.md) (acquires session lock)
 mem, err := sdk.ReadMemory("wizard")
+
+// Fully rendered system prompt (AGENTS.md + macro expansion) - no model constructed,
+// doesn't require runtime.json (acquires session lock)
+prompt, err := sdk.RenderSystemPrompt("wizard")
 
 // Manually trigger session compaction evaluation (acquires session lock)
 compacted, err := sdk.CompactSession(ctx, "wizard")
