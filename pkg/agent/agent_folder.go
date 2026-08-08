@@ -101,21 +101,9 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	}
 
 	// Discover tools for agent
-	discoveredTools, _, err := DiscoverAgentTools(fa.AgentDir)
+	toolPathMap, discoveredTools, _, err := DiscoverAgentToolsMap(fa.AgentDir)
 	if err != nil {
 		return "", fmt.Errorf("failed to discover agent tools: %w", err)
-	}
-	toolPathMap := make(map[string]string)
-	if len(discoveredTools) > 0 {
-		toolsDir := filepath.Join(fa.AgentDir, ToolsDirName)
-		filepath.Walk(toolsDir, func(path string, info os.FileInfo, err error) error {
-			if err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
-				if _, exists := toolPathMap[info.Name()]; !exists {
-					toolPathMap[info.Name()] = path
-				}
-			}
-			return nil
-		})
 	}
 
 	var decls []*genai.FunctionDeclaration
@@ -373,7 +361,12 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, toolPath, cmdArgs...)
+	absToolPath, err := filepath.Abs(toolPath)
+	if err != nil {
+		absToolPath = toolPath
+	}
+
+	cmd := exec.CommandContext(ctx, absToolPath, cmdArgs...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
 
@@ -402,7 +395,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		errStr := stderr.String()
 		if errStr == "" {

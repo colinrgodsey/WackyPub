@@ -41,3 +41,78 @@ func TestExecuteTool_Failure(t *testing.T) {
 		t.Fatalf("unexpected fail output: %q", output)
 	}
 }
+
+func TestDiscoverAgentTools_SymlinkToolpack(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// External toolpack directory with 3 executable files
+	toolpackDir := filepath.Join(tmpDir, "external_toolpack")
+	if err := os.MkdirAll(toolpackDir, 0755); err != nil {
+		t.Fatalf("failed to create external toolpack: %v", err)
+	}
+	for _, name := range []string{"cat", "ls", "man"} {
+		path := filepath.Join(toolpackDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\necho "+name), 0755); err != nil {
+			t.Fatalf("failed to write %s: %v", name, err)
+		}
+	}
+
+	// Agent directory with tools/ folder containing a symlink to external_toolpack
+	agentDir := filepath.Join(tmpDir, "agent_bob")
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed to create agent tools dir: %v", err)
+	}
+
+	symlinkPath := filepath.Join(toolsDir, "read-only-fs")
+	if err := os.Symlink(toolpackDir, symlinkPath); err != nil {
+		t.Fatalf("failed to create toolpack symlink: %v", err)
+	}
+
+	toolMap, discovered, shadowed, err := DiscoverAgentToolsMap(agentDir)
+	if err != nil {
+		t.Fatalf("DiscoverAgentToolsMap failed: %v", err)
+	}
+
+	if len(shadowed) > 0 {
+		t.Errorf("expected 0 shadowed warnings, got %v", shadowed)
+	}
+
+	// Must discover cat, ls, man (3 tools), NOT "read-only-fs"
+	expected := []string{"cat", "ls", "man"}
+	if len(discovered) != len(expected) {
+		t.Fatalf("expected discovered tools %v, got %v", expected, discovered)
+	}
+	for i, name := range expected {
+		if discovered[i] != name {
+			t.Errorf("discovered[%d] = %q, expected %q", i, discovered[i], name)
+		}
+		if _, exists := toolMap[name]; !exists {
+			t.Errorf("toolMap missing entry for %q", name)
+		}
+	}
+
+	// Verify "read-only-fs" directory symlink itself is NOT registered as a tool
+	if _, exists := toolMap["read-only-fs"]; exists {
+		t.Errorf("directory symlink 'read-only-fs' was wrongly registered as an executable tool")
+	}
+}
+
+func TestExecuteTool_RelativePath(t *testing.T) {
+	// Setup subdirectories inside current CWD to test relative paths
+	relAgentDir := filepath.Join("test_scratch", "agent_rel")
+	if err := os.MkdirAll(relAgentDir, 0755); err != nil {
+		t.Fatalf("failed to create rel agent dir: %v", err)
+	}
+	defer os.RemoveAll("test_scratch")
+
+	toolPath := filepath.Join(relAgentDir, "tool.sh")
+	if err := os.WriteFile(toolPath, []byte("#!/bin/sh\necho relative_ok"), 0755); err != nil {
+		t.Fatalf("failed to write tool.sh: %v", err)
+	}
+
+	out := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, nil)
+	if !strings.Contains(out, "relative_ok") {
+		t.Fatalf("expected 'relative_ok', got: %q", out)
+	}
+}

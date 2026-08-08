@@ -233,45 +233,73 @@ func readAllowedAgents(path string) ([]string, error) {
 	return result, scanner.Err()
 }
 
-// DiscoverAgentTools walks <agentDir>/tools/ recursively for executable files according to D14.
-// Returns discovered unique tool names and shadowing warning messages.
-func DiscoverAgentTools(agentDir string) ([]string, []string, error) {
+// DiscoverAgentToolsMap walks <agentDir>/tools/ recursively for executable files according to D14.
+// Resolves directory and file symlinks and follows them, preventing infinite symlink cycles.
+// Returns a map of tool name -> file path, discovered unique tool names, shadowing warning messages, and error.
+func DiscoverAgentToolsMap(agentDir string) (map[string]string, []string, []string, error) {
 	toolsDir := filepath.Join(agentDir, ToolsDirName)
 	if !pathExists(toolsDir) {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	toolMap := make(map[string]string) // tool name -> file path
 	var discovered []string
 	var shadowed []string
+	visitedDirs := make(map[string]bool)
 
-	err := filepath.Walk(toolsDir, func(path string, info os.FileInfo, err error) error {
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return nil // Skip unresolvable directory symlinks
+		}
+		if visitedDirs[realDir] {
+			return nil // Prevent cycle
+		}
+		visitedDirs[realDir] = true
+
+		entries, err := os.ReadDir(dir)
 		if err != nil {
 			return err
 		}
-		if info.IsDir() {
-			return nil
-		}
 
-		// Check if file is executable
-		if info.Mode()&0111 != 0 {
-			name := info.Name()
-			if existingPath, exists := toolMap[name]; exists {
-				shadowed = append(shadowed, fmt.Errorf("tool %q at %s is shadowed by %s", name, existingPath, path).Error())
-			} else {
-				discovered = append(discovered, name)
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			info, err := os.Stat(path) // os.Stat follows symlinks!
+			if err != nil {
+				continue // Skip broken symlinks or unreadable files
 			}
-			toolMap[name] = path
+
+			if info.IsDir() {
+				if err := walk(path); err != nil {
+					return err
+				}
+			} else if info.Mode().IsRegular() && info.Mode()&0111 != 0 {
+				name := entry.Name()
+				if existingPath, exists := toolMap[name]; exists {
+					shadowed = append(shadowed, fmt.Sprintf("tool %q at %s is shadowed by %s", name, existingPath, path))
+				} else {
+					discovered = append(discovered, name)
+				}
+				toolMap[name] = path
+			}
 		}
 		return nil
-	})
+	}
 
-	if err != nil {
-		return nil, nil, err
+	if err := walk(toolsDir); err != nil {
+		return nil, nil, nil, err
 	}
 
 	sort.Strings(discovered)
-	return discovered, shadowed, nil
+	return toolMap, discovered, shadowed, nil
+}
+
+// DiscoverAgentTools walks <agentDir>/tools/ recursively for executable files according to D14.
+// Returns discovered unique tool names and shadowing warning messages.
+func DiscoverAgentTools(agentDir string) ([]string, []string, error) {
+	_, discovered, shadowed, err := DiscoverAgentToolsMap(agentDir)
+	return discovered, shadowed, err
 }
 
 // InspectAgentDir builds an AgentInspection for <wsDir>/<agentID> without

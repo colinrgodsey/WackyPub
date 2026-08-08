@@ -245,12 +245,13 @@ and both are already fully supported today.
 
 ## D14: Agent tools are executables discovered under `tools/`, not a hand-authored registry
 
-**Not implemented yet - design only, see TODOS.md.** An agent's available
-tools are whatever executable files are found by recursively walking
-`<agent_dir>/tools/` (itself possibly a symlink, and free to contain
-symlinks to shared "toolpack" directories rather than individual tool
-files) - mirroring the existing symlink-sharing pattern used for
-`runtime.json` and, in `testws/`, `AGENTS.md`/`IDENTITY.md`.
+An agent's available tools are whatever executable files are found by recursively walking `<agent_dir>/tools/` (itself possibly a symlink, and free to contain symlinks to shared "toolpack" directories rather than individual tool files) - mirroring the existing symlink-sharing pattern used for `runtime.json` and `AGENTS.md`/`IDENTITY.md`.
+
+**Symlink Resolution Mechanics**:
+- `DiscoverAgentToolsMap` resolves directory and file symlinks using `os.Stat` and `filepath.EvalSymlinks`, traversing into symlinked "toolpack" directories (e.g. `tools/read-only-fs` -> `/path/to/toolpack`) and discovering the executable files inside them (`cat`, `ls`, `man`).
+- Symlinks pointing directly to executable files are followed to their target, registering the symlink's basename as the discovered tool.
+- Broken symlinks are ignored safely without halting traversal.
+- Visited real directory paths are tracked to prevent infinite recursion on circular symlink loops.
 
 **Why filesystem discovery over a hand-authored tool registry**: same
 rationale as D13 - an executable that self-describes (name, description,
