@@ -312,11 +312,10 @@ whether that's worth a command later.
 
 ## D16: Cross-agent tool invocation is governed by two separate mechanisms - `WACKYPUB_ALLOWED_AGENTS` for authorization, `WACKYPUB_CALL_CHAIN` for deadlock safety
 
-**Not implemented yet - design only, see TODOS.md.** Once agents can invoke
-`wackypub` itself as a tool (e.g. to message another agent), two failure
-modes need independent guards: an agent reaching an agent nobody authorized
-it to reach, and an agent reaching (directly or transitively) back to itself
-mid-generation.
+Agents can invoke `wackypub` itself as a discovered tool (e.g. to message
+another agent - see D17). Two failure modes need independent guards: an
+agent reaching an agent nobody authorized it to reach, and an agent
+reaching (directly or transitively) back to itself mid-generation.
 
 **`WACKYPUB_ALLOWED_AGENTS`** is a file in an agent's own folder listing
 which other agent IDs it's permitted to target via a `wackypub`-as-tool
@@ -363,6 +362,8 @@ authorized configuration can still produce a deadlock. Neither is a
 substitute for the other.
 
 **Concurrency Scope Note**: `WACKYPUB_CALL_CHAIN` environment variable propagation is designed for subprocess CLI calls (where each spawned tool process inherits its own environment snapshot). For multi-threaded Go SDK consumers calling `AgentSDK` directly across concurrent goroutines in the same process, `os.Setenv` is process-global; if concurrent in-process Goroutine SDK calls targeting different agents are required in the future, `context.Context` key propagation can supplement env var checks.
+
+**Read-only inspection is deliberately exempt**: `AgentSDK.InspectAgent` (and therefore `wackypub workspace`) does *not* go through `ValidateAgentTarget`. This authorization boundary exists to gate cross-agent tool invocation/generation - something that can cause a side effect or a deadlock risk - not read-only diagnostic visibility, which has neither. Gating it the same way was a real bug in practice: an agent inspecting the workspace (including inspecting *itself*, since an agent's own ID isn't automatically in its own allowlist) would get an authorization failure that `wackypub workspace`'s summary table rendered as a generic `"error"` in the RUNTIME.JSON column - indistinguishable from an actually-broken config file, and actively misleading. This exemption is scoped narrowly to inspection; mutating/generating SDK methods still go through the full check, and the open question in TODOS.md about whether CWD-based *mutating* invocations should be scoped differently remains unresolved.
 
 ## D17: Tool execution loop and self-describing tool protocol
 

@@ -162,6 +162,14 @@ func (s *AgentSDK) ListAgents() ([]string, error) {
 // session/memory stats. Safe to call on an agent that doesn't exist yet or
 // is only partially set up - see AgentInspection.
 //
+// Deliberately does not go through ValidateAgentTarget's WACKYPUB_ALLOWED_AGENTS
+// check (D16): that authorization boundary exists to gate cross-agent tool
+// invocation/generation, not read-only diagnostic visibility - InspectAgent
+// has no side effects and can't cause another agent to do anything. Gating
+// it the same way surfaces an "unauthorized" failure as a generic parse/
+// config error in wackypub workspace's summary table, which is actively
+// misleading (see D16).
+//
 // Does not create the agent directory as a side effect (unlike most other
 // AgentSDK methods) - if it doesn't exist, returns an AgentInspection with
 // AgentDirExists false and every other field zero-valued. If it does exist,
@@ -170,12 +178,6 @@ func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
-
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if _, err := os.Stat(agentDir); os.IsNotExist(err) {

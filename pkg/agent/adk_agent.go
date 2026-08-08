@@ -66,14 +66,15 @@ func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmM
 	return ag, nil
 }
 
-// ExtractTextFromEvent parses plain text output from an ADK session event.
+// ExtractTextFromEvent parses plain text output from an ADK session event,
+// excluding reasoning/thinking parts - mirrors ContentText's behavior.
 func ExtractTextFromEvent(event *session.Event) string {
 	if event == nil || event.Content == nil {
 		return ""
 	}
 	var text string
 	for _, part := range event.Content.Parts {
-		if part != nil && part.Text != "" {
+		if part != nil && part.Text != "" && !part.Thought {
 			text += part.Text
 		}
 	}
