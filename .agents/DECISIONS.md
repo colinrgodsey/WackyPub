@@ -481,5 +481,20 @@ Agents can be given pre-written, distilled guidance ("skills") instead of having
 
 **Why**: Mirrors D17's `run_command` reasoning - a short, always-visible description plus content loaded only when actually needed keeps the always-in-context cost near zero while still making distilled knowledge discoverable, rather than forcing a choice between "nothing is ever pre-written" and "everything is always in every prompt." Reusing the standard `SKILL.md` + YAML-frontmatter shape (rather than inventing a new format) means existing skills written for other harnesses work here with no translation beyond the one added `always_load` field. Loading a skill as a normal tool response - not a special system-prompt mutation - keeps the mechanism consistent with everything else in the tool-calling system and avoids building a second, bespoke content-injection path alongside the one `FunctionResponse` already provides.
 
+## D21: Explicit model provider selection (`"openai"`, `"gemini"`, `"anthropic"`) and Anthropic ADK model adapter
 
+Agent runtime configurations (`runtime.json`) support explicit model provider selection via a `provider` field (`"openai"` | `"gemini"` | `"anthropic"`), eliminating implicit fallback ambiguity and enabling native Anthropic Claude models via `github.com/achetronic/adk-utils-go/genai/anthropic` (resolved to the `colinrgodsey` fork - see D3).
 
+**Provider Resolution (`runtime.json`)**:
+- `"openai"` (or `"openai-compatible"`): instantiates `NewOpenAIModel` (`pkg/agent/openai_model.go`).
+- `"anthropic"`: instantiates `NewAnthropicModel` (`pkg/agent/anthropic_model.go`), backed by `github.com/achetronic/adk-utils-go/genai/anthropic`.
+- `"gemini"`: instantiates `CreateGeminiModel` (`pkg/agent/adk_agent.go`), backed by native `google.golang.org/adk/v2/model/gemini`.
+- **Defaulting & Backwards Compatibility**: If `provider` is empty or unset, `LoadRuntimeConfig` defaults to `"openai"` if `endpoint` is set, or `"gemini"` if `endpoint` is empty.
+
+**Anthropic Thinking Knobs**:
+`RuntimeConfig` exposes native Anthropic thinking/reasoning configuration:
+- `thinkingBudgetTokens`: Sets classic token budget for Anthropic thinking (`"enabled"` mode, e.g. 1024).
+- `thinkingEffort`: Sets reasoning effort (`"low"`, `"medium"`, `"high"`) for adaptive thinking mode.
+- `thinkingMode`: Sets thinking mode (`"enabled"`, `"adaptive"`, or empty for auto-detection).
+
+**Why**: Explicit provider selection removes provider ambiguity and gives every LLM backend (OpenAI-compatible gateways, native Gemini ADK models, and native Anthropic Claude models) first-class runtime config support with dedicated thinking/reasoning controls.

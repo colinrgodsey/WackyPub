@@ -35,6 +35,34 @@ import (
 // writeup. Once the fix lands upstream and is tagged, drop the replace
 // directive and go back to depending on achetronic/adk-utils-go directly.
 func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
+	effort := runtimeCfg.ReasoningEffort
+	if effort == "" {
+		effort = runtimeCfg.ThinkingEffort
+	}
+
+	extraBody := runtimeCfg.ExtraBody
+	if effort != "" {
+		if extraBody == nil {
+			extraBody = make(map[string]any)
+		} else {
+			clone := make(map[string]any, len(extraBody)+1)
+			for k, v := range extraBody {
+				clone[k] = v
+			}
+			extraBody = clone
+		}
+		isOpenRouter := strings.Contains(strings.ToLower(runtimeCfg.Endpoint), "openrouter.ai")
+		if isOpenRouter {
+			if _, ok := extraBody["reasoning"]; !ok {
+				extraBody["reasoning"] = map[string]any{"effort": effort}
+			}
+		} else {
+			if _, ok := extraBody["reasoning_effort"]; !ok {
+				extraBody["reasoning_effort"] = effort
+			}
+		}
+	}
+
 	return adkopenai.New(adkopenai.Config{
 		APIKey:    runtimeCfg.APIKey,
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
@@ -45,7 +73,7 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		ReasoningEgress:          adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
 		ReasoningField:           runtimeCfg.ReasoningField,
 		SupportsReasoningDetails: runtimeCfg.SupportsReasoningDetails,
-		ExtraBody:                runtimeCfg.ExtraBody,
+		ExtraBody:                extraBody,
 	})
 }
 

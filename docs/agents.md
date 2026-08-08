@@ -89,9 +89,17 @@ Specifies the LLM provider configuration and session compaction parameters for t
 #### Fields
 | Field | Type | Description |
 |---|---|---|
-| `endpoint` | `string` | OpenAI-compatible HTTP base URL (e.g., `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, `http://localhost:11434/v1`). Empty falls back to native Gemini via `GEMINI_API_KEY`/`--api-key`. |
-| `model` | `string` | Target LLM model identifier (e.g., `gpt-4o`, `anthropic/claude-haiku-4.5`, `auto` for OpenRouter's model router). |
+| `provider` | `string` | Model provider selection: `"openai"` (default when `endpoint` is set), `"gemini"` (default when `endpoint` is empty), or `"anthropic"`. |
+| `endpoint` | `string` | Base HTTP URL endpoint (e.g. `https://api.openai.com/v1`, `https://api.anthropic.com`, `http://localhost:11434/v1`). |
+| `model` | `string` | Target LLM model identifier (e.g., `gpt-4o`, `claude-3-7-sonnet-20250219`, `gemini-2.5-flash`). |
 | `apiKey` | `string` | Bearer token / API key for authentication. |
+| `anthropicThinkingBudgetTokens` | `int` | Anthropic classic thinking token budget (e.g. `1024`). Must be >= 1024 and less than output token limits. |
+| `anthropicThinkingEffort` | `string` | Anthropic reasoning effort (`"low"`, `"medium"`, `"high"`, `"max"`) for adaptive thinking mode. |
+| `anthropicThinkingMode` | `string` | Anthropic thinking mode: `"enabled"` (classic budget), `"adaptive"` (effort-based), or empty for auto-detection. |
+| `geminiThinkingBudget` | `int` | Gemini token budget for reasoning (e.g. `2048`). |
+| `geminiThinkingLevel` | `string` | Gemini reasoning level (`"low"`, `"medium"`, `"high"`, `"minimal"`). |
+| `geminiIncludeThoughts` | `bool` | Whether thoughts are included in output parts for native Gemini models (default: `true`). |
+| `reasoningEffort` | `string` | OpenAI / OpenRouter reasoning effort (`"low"`, `"medium"`, `"high"`). |
 | `sessionCompactPct` | `float64` | Percentage of session turns to consume/compact during compaction (default: `50.0`). |
 | `contextWindow` | `int` | Optional maximum token threshold triggering auto-compaction. `0` disables auto-compaction. |
 | `preserveThinking` | `bool` | Set for backends that resend and bill for prior reasoning text on every turn (e.g. Kimi K2 Thinking, DeepSeek V4 thinking mode). When true, the compaction token estimate counts `Thought`-marked part text, since it's actually replayed to the model on every subsequent request. Leave `false` for backends that drop/ignore replayed reasoning by default (e.g. Qwen3). See [§7](#7-reasoning--thinking-support). |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -39,13 +40,67 @@ func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (mo
 	return llmModel, nil
 }
 
-// BuildADKAgent constructs a Google ADK LLMAgent for an agent directory.
-// Name is agentID (unique within workspace), renderedPrompt is AGENTS.md system prompt, maxToolTurns caps tool executions.
-func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
+// convertThinkingLevel maps a string effort level ("low", "medium", "high", "minimal") to genai.ThinkingLevel.
+func convertThinkingLevel(level string) genai.ThinkingLevel {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "MINIMAL":
+		return genai.ThinkingLevelMinimal
+	case "LOW":
+		return genai.ThinkingLevelLow
+	case "MEDIUM":
+		return genai.ThinkingLevelMedium
+	case "HIGH", "MAX":
+		return genai.ThinkingLevelHigh
+	default:
+		return genai.ThinkingLevelUnspecified
+	}
+}
+
+func getGeminiThinkingConfig(cfg *RuntimeConfig) *genai.ThinkingConfig {
+	if cfg == nil || cfg.Provider != "gemini" {
+		return nil
+	}
+
+	budget := cfg.GeminiThinkingBudget
+	if budget == nil {
+		budget = cfg.ThinkingBudgetTokens
+	}
+
+	level := cfg.GeminiThinkingLevel
+	if level == "" {
+		level = cfg.ThinkingEffort
+	}
+
+	if budget == nil && level == "" && cfg.GeminiIncludeThoughts == nil {
+		return nil
+	}
+
+	include := true
+	if cfg.GeminiIncludeThoughts != nil {
+		include = *cfg.GeminiIncludeThoughts
+	}
+
+	tc := &genai.ThinkingConfig{
+		IncludeThoughts: include,
+	}
+	if budget != nil {
+		b := int32(*budget)
+		tc.ThinkingBudget = &b
+	}
+	if level != "" {
+		tc.ThinkingLevel = convertThinkingLevel(level)
+	}
+	return tc
+}
+
+// BuildADKAgentWithConfig constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings.
+func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns int, runtimeCfg *RuntimeConfig, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns
 	}
 	var modelCalls int
+
+	thinkingConfig := getGeminiThinkingConfig(runtimeCfg)
 
 	cfg := llmagent.Config{
 		Name:        agentID,
@@ -56,6 +111,14 @@ func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmM
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 				modelCalls++
+				if thinkingConfig != nil {
+					if req.Config == nil {
+						req.Config = &genai.GenerateContentConfig{}
+					}
+					if req.Config.ThinkingConfig == nil {
+						req.Config.ThinkingConfig = thinkingConfig
+					}
+				}
 				// First model call is initial prompt; subsequent model calls are tool loop turns.
 				// Stop short rather than error: the caller (human or controlling agent) gets a
 				// clear, successful turn back with a hint to send another message to continue,
@@ -82,6 +145,12 @@ func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmM
 	}
 
 	return ag, nil
+}
+
+// BuildADKAgent constructs a Google ADK LLMAgent for an agent directory.
+// Name is agentID (unique within workspace), renderedPrompt is AGENTS.md system prompt, maxToolTurns caps tool executions.
+func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
+	return BuildADKAgentWithConfig(agentID, renderedPrompt, maxToolTurns, nil, llmModel, tools...)
 }
 
 // ExtractTextFromEvent parses plain text output from an ADK session event,

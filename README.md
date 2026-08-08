@@ -1,4 +1,4 @@
-# 🎭 WackyPubAI
+# 🎭 WackyPub
 
 A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a plain file, and the same command interface an agent uses to explore its own tools is the one you use from your terminal.
 
@@ -6,9 +6,9 @@ A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Develo
 
 ## What it is
 
-An agent in WackyPubAI is a folder. `AGENTS.md` is its system prompt, `MEMORY.md` is what it remembers long-term, `session.jsonl` is its turn history, `runtime.json` says which model backend it talks to. That's the whole foundation — no database, no bespoke config DSL, nothing that isn't a file you could open in a text editor and understand immediately.
+An agent in WackyPub is a folder. `AGENTS.md` is its system prompt, `MEMORY.md` is what it remembers long-term, `session.jsonl` is its turn history, `runtime.json` says which model backend it talks to. That's the whole foundation — no database, no bespoke config DSL, nothing that isn't a file you could open in a text editor and understand immediately.
 
-On top of that foundation, an agent can be handed capabilities the same way: a `tools/` folder full of executables it can run, a `skills/` folder full of distilled knowledge it can load on demand, and a persistent scratchpad for passing data between tool calls without ever paying to regenerate it. And because every agent is just a workspace directory next to every other agent, one agent can call another — with real authorization and deadlock safety, not just cross fingers — turning a single roleplay character into a coordinating cast, or a lone assistant into a small swarm of specialists.
+On top of that foundation, an agent can be handed capabilities the same way: a `tools/` folder full of executables it can run, a `skills/` folder full of distilled knowledge it can load on demand, and a persistent scratchpad for passing data between tool calls without ever paying to regenerate it. And because every agent is just a workspace directory next to every other agent, one agent can call another — with real authorization and deadlock safety, not just crossed fingers — turning a single roleplay agent into a coordinating cast, or a lone assistant into a small swarm of specialty agents.
 
 ---
 
@@ -24,22 +24,25 @@ That's it — from the repo root, this builds `wackypub`, builds and launches a 
 
 What makes this worth trying isn't the container - it's how little is actually in it. `main` has two sub-agents (`sub1`, `sub2`) it's allowed to delegate to, and that's the entire environment:
 
-- **One skill**: the `wackypub` skill itself - a short, always-loaded primer on how to self-discover the CLI via `--help`. Nothing else is pre-loaded.
+- **One skill**: the `wackypub` skill itself for the main agent - a short, always-loaded primer on how to self-discover the CLI via `--help`. Nothing else is pre-loaded.
 - **A handful of lines of actual instruction** in each agent's `AGENTS.md` - "you manage an ubuntu system with full root access," how to invoke `bash`, and (for `main` only) "don't let your sub-agents cheat." See [`agents/container/`](agents/container) for the exact text - it's short enough to read in full.
-- **Two commands wired up as tools**: `bash` and `sed`. `wackypub` itself is just on the container's `PATH`, not a registered tool - so even *reaching a sub-agent* happens through `bash -c "wackypub agent prompt sub1 ..."`, not a dedicated mechanism.
+- **Three commands wired up as tools**: `bash`, `sed`, and `wackypub` itself (for reaching sub-agents directly, rather than through a `bash -c "wackypub ..."` detour). `bash` alone would technically be enough - it can reach anything on the container's `PATH` - but linking specific commands in directly is more efficient for a model to call than always routing through a shell.
 - **The built-in scratchpad and skill tools** (`create_scratchpad`, `get_scratchpad`, `list_scratchpads`, `load_skill`) - the same ones every agent gets for free, nothing container-specific.
 
 No file-editing tool, no curated command list, no task-specific scaffolding. Ask `main` to do something real - write a script, look something up, coordinate its sub-agents on a piece of work - and it figures out the rest from `--help` and first principles. When you're done, `./scripts/destroy_container.sh` tears down the container, image, and workspace.
+
+Example prompts (these even work on Haiku and Gemma 4 A4B):
+- `can you install sqlite and make a test database. verify you can use queries to create a table. while thats happening, can you have a sub-agent write and run a go script to compute the first 20 prime numbers, and have the other sub-agent pull the most up-to-date wikipedia article for dogs and give me the word count of the article plus 5 interesting facts.`
 
 ---
 
 ## Philosophy
 
-**The CLI is the interface — for you and for the agent.** Most agent frameworks give the model a bespoke tool schema and hide the CLI behind an SDK. WackyPubAI does the opposite: the thing an agent gets access to *is* `wackypub` itself, constrained to run one command at a time. `--help` at every level has to be complete enough to drive correctly with zero external documentation, because that's genuinely all an agent has. If a human can figure out the tool from `--help` alone, so can a model — and that constraint has caught real, non-hypothetical bugs (a `--help` routing gap, a misleading error label) that would never have surfaced from an SDK-only design.
+**The CLI is the interface — for you and for the agent.** Most agent frameworks give the model a bespoke tool schema and hide the CLI behind an SDK. WackyPub does the opposite: the thing an agent gets access to *is* `wackypub` itself, constrained to run one command at a time. `--help` at every level has to be complete enough to drive correctly with zero external documentation, because that's genuinely all an agent has. If a human can figure out the tool from `--help` alone, so can a model — and that constraint has caught real, non-hypothetical bugs (a `--help` routing gap, a misleading error label) that would never have surfaced from an SDK-only design.
 
 **Plain files over infrastructure.** Every piece of agent state — identity, memory, history, config, tools, skills, scratchpad — is something you can `cat`, edit by hand, `git diff`, or `symlink`. Swapping a model backend is repointing one symlink. Sharing a toolset or a skill across agents is one more symlink. Nothing here needs a server, a database, or a special editor to inspect or modify.
 
-**Every tool is a command.** There's no plugin system, no capability-registration API. Past the handful of built-ins (mostly scratchpad and skill loading), everything an agent can do is an executable linked into its `tools/` folder. Want your agent to have shell access? Link `bash`. Want it to edit text? Link `sed`. Want it to orchestrate other agents? Link `wackypub` itself back in - it's not special-cased, it's just another executable an agent happens to invoke.
+**Every tool is a command.** There's no plugin system, no capability-registration API. Past the handful of built-ins (mostly scratchpad and skill loading), everything an agent can do is an executable linked into its `tools/` folder. Link in only the specific commands you want it to have, or link in `bash` to give it access to everything, or both - link a few specific commands directly (more efficient for the model to call) alongside `bash` as a fallback for everything else. Want it to orchestrate other agents? Link `wackypub` itself back in - it's not special-cased, it's just another executable an agent happens to invoke.
 
 **Capabilities are composable primitives, not a monolith.** `run_command` is one generic tool that dispatches to anything in `tools/` — drop in any executable and it's usable, no custom schema required. Skills follow the same shape other agent harnesses already use (`SKILL.md` with YAML frontmatter), so skills written elsewhere work here with no translation. The scratchpad exists because generation is the expensive part of a token budget, not consumption — an agent can pipe one command's output directly into another's input, or fork one payload out to several downstream calls, without a single one of those bytes ever being generated or re-read by the model itself.
 
@@ -50,7 +53,7 @@ No file-editing tool, no curated command list, no task-specific scaffolding. Ask
 ## Why it's simple
 
 - An agent's entire identity and behavior lives in files you already know how to read: Markdown for prompts and memory, JSON Lines for history, JSON for config.
-- Adding a tool is dropping or linking an executable in a folder. Adding a skill is dropping a `SKILL.md` in a folder. No registration step, no schema to hand-author.
+- Adding a tool is dropping or linking an executable in a folder. Adding a skill is dropping or linking a `SKILL.md` folder in the same way. No registration step, no schema to hand-author.
 - The CLI *is* the SDK's surface — every `wackypub agent ...` subcommand has a matching `AgentSDK` Go method, so there's exactly one behavior to learn, not two.
 - Nothing about the system depends on a specific model provider. The same OpenAI-compatible adapter talks to OpenAI, OpenRouter, DeepSeek, Kimi, vLLM, Ollama, llama.cpp, or LM Studio, and reconciles their different ways of expressing reasoning/thinking content.
 
@@ -109,7 +112,7 @@ go build -o wackypub .
 <agent_id>/
 ├── runtime.json                # Model backend config (may be a symlink)
 ├── AGENTS.md                   # System prompt, supports @<FILE_PATH> macro inclusion
-├── IDENTITY.md                 # (optional) character sheet, included via @IDENTITY.md
+├── IDENTITY.md                 # (optional) character sheet, included via @IDENTITY.md in your AGENTS.md
 ├── MEMORY.md                   # Long-term memory, updated by compaction
 ├── session.jsonl               # Turn history, one genai.Content per line
 ├── scratchpad.json             # Persistent, session-scoped data store (managed by tools, not hand-edited)
@@ -135,26 +138,22 @@ See [`docs/agents.md`](docs/agents.md) for the full field list, including reason
 `AGENTS.md`:
 
 ```markdown
-# Agent Personality: Barnaby
-You are Barnaby, a tavern keeper.
+# Character Agent
+You are a character in a medieval setting.
 
 @IDENTITY.md
-@rules/conduct.md
+
+@../rules/conduct.md
 ```
 
 ---
 
 ## CLI Usage
 
-Every command is self-documenting — run `wackypub [command] --help` at any level for exact arguments, flags, and preconditions. This is the actual, current top-level help:
+Every command is self-documenting — run `wackypub [command] --help` at any level for exact arguments, flags, and preconditions.
 
 ```
 $ wackypub --help
-Available Commands:
-  agent       Manage folder-based agent sessions (<ws_dir>/<agent_id>)
-  workspace   Show workspace information, or diagnose a single agent's setup
-  completion  Generate the autocompletion script for the specified shell
-  version     Print version information for WackyPubAI CLI
 ```
 
 ```bash
@@ -194,4 +193,4 @@ For live/manual testing against a real backend and the techniques developed for 
 
 ## License
 
-MIT
+[MIT](LICENSE)

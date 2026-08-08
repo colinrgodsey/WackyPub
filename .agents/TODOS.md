@@ -4,38 +4,20 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
-## Real, explicit native Gemini runtime support
+## Handle OpenRouter / OpenAI Rate Limiting & Empty Choices Error Recovery
 
-`CreateGeminiModel` (`pkg/agent/adk_agent.go`) exists, but it's only ever
-reached as an implicit fallback in `LoadFolderAgent` when `runtime.json`
-has no `endpoint` set - there's no explicit way to *choose* native Gemini,
-only to fall into it by omission. It also doesn't wire up any of the
-reasoning/thinking configuration the OpenAI adapter has
-(`reasoningEgress`, `reasoningField`, `supportsReasoningDetails`,
-`extraBody`) - Gemini's native "thinking" config shape in the `genai` SDK
-is its own thing, not the OpenAI-wire-format convention those fields
-target, so this isn't just "already works, just undocumented."
+When calling OpenAI-compatible APIs (specifically OpenRouter), rate-limiting (429), capacity limits, upstream timeouts, or moderation flags can result in HTTP 200 OK responses returning an empty choices array (`"choices": []`). 
 
-## Native Anthropic runtime support via the adk-utils-go fork
+The official `openai-go/v3` SDK (used by `adk-utils-go`'s `genai/openai` adapter) parses `resp.Choices` as a 0-length slice, causing `convertResponse` to return a bare `ErrNoChoicesInResponse` ("no choices in OpenAI response") without surfacing the underlying root cause.
 
-The `adk-utils-go` fork already has a ready-to-use Anthropic adapter -
-`github.com/achetronic/adk-utils-go/genai/anthropic.New(cfg Config) *Model`,
-same shape as the `openai` package `NewOpenAIModel` already wraps (see
-`examples/anthropic-client` in the module for the reference usage,
-including its own reasoning knobs: `THINKING_BUDGET_TOKENS`,
-`THINKING_EFFORT`, `THINKING_MODE`). Nothing in WackyPubAI reaches it at
-all right now - `LoadFolderAgent` only ever chooses between the OpenAI
-adapter and the Gemini fallback above. Needs a `NewAnthropicModel`
-wrapper mirroring `NewOpenAIModel`'s shape, plus `RuntimeConfig` fields
-for Anthropic's own thinking-budget/effort knobs (distinct from both the
-OpenAI and Gemini reasoning conventions - three different shapes, not one).
+**Key Triggers & Gaps**:
+1. **Rate Limiting & 429s**: When OpenRouter or an upstream provider rate-limits a request, OpenRouter sometimes wraps rate-limit errors inside an HTTP 200 JSON envelope carrying `"choices": []` alongside an embedded `"error"` object (e.g. `{"choices": [], "error": {"code": 429, "message": "Rate limit reached"}}`).
+2. **Upstream Provider Errors**: Upstream nodes (Novita, Together, Fireworks, DeepInfra) hitting gateway timeouts or capacity limits return `"choices": []` with embedded error payloads.
+3. **Masked Error Strings**: Because `openai-go` only inspects `resp.Choices`, embedded `"error"` objects on HTTP 200 responses are discarded by `convertResponse`, masking actionable error messages.
 
-Both of these want the same missing piece: `runtime.json` has no explicit
-provider-selection field today (native Gemini is chosen by *absence* of
-`endpoint`, nothing chooses Anthropic at all). A `provider` field
-(`"openai"` default | `"gemini"` | `"anthropic"`) would give all three a
-real, explicit selection mechanism instead of inferring it, and leaves
-room for a fourth later.
+**Required Work**:
+- In `adk-utils-go`'s `convertResponse`, inspect `resp.RawJSON()` for top-level `"error"` fields when `len(resp.Choices) == 0` and surface the embedded error message (e.g. `fmt.Errorf("no choices in OpenAI response: %s", rawErrMessage)`).
+- Implement retry / backoff logic in the caller or model adapter for transient rate-limits (429) and upstream provider timeouts when `choices: []` is received.
 
 ## Consider a timeout on session lock acquisition
 

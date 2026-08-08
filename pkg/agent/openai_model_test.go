@@ -369,3 +369,62 @@ func TestNewOpenAIModel_SupportsReasoningDetails(t *testing.T) {
 		})
 	}
 }
+
+// TestNewOpenAIModel_ReasoningEffortShape confirms RuntimeConfig.ReasoningEffort
+// produces the right wire shape for the actual endpoint: OpenRouter's nested
+// {"reasoning": {"effort": ...}} convention, or real OpenAI's top-level
+// reasoning_effort field for everything else - sending the wrong shape to
+// either one silently fails to set reasoning effort at all.
+func TestNewOpenAIModel_ReasoningEffortShape(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint func(srvURL string) string
+		check    func(t *testing.T, body map[string]any)
+	}{
+		{
+			name:     "OpenRouter endpoint: nested reasoning.effort",
+			endpoint: func(srvURL string) string { return srvURL + "/openrouter.ai/api/v1" },
+			check: func(t *testing.T, body map[string]any) {
+				reasoning, ok := body["reasoning"].(map[string]any)
+				if !ok {
+					t.Fatalf("expected a top-level 'reasoning' object, got %+v", body)
+				}
+				if reasoning["effort"] != "high" {
+					t.Errorf("expected reasoning.effort=high, got %+v", reasoning)
+				}
+				if _, ok := body["reasoning_effort"]; ok {
+					t.Errorf("did not expect a top-level reasoning_effort field for OpenRouter, got %+v", body)
+				}
+			},
+		},
+		{
+			name:     "Non-OpenRouter endpoint (real OpenAI shape): top-level reasoning_effort",
+			endpoint: func(srvURL string) string { return srvURL },
+			check: func(t *testing.T, body map[string]any) {
+				if body["reasoning_effort"] != "high" {
+					t.Errorf("expected top-level reasoning_effort=high, got %+v", body)
+				}
+				if _, ok := body["reasoning"]; ok {
+					t.Errorf("did not expect a nested 'reasoning' object for a non-OpenRouter endpoint, got %+v", body)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, bodies := captureLastRequestBody(t)
+			m := NewOpenAIModel(&RuntimeConfig{
+				Model:           "test-model",
+				Endpoint:        tt.endpoint(srv.URL),
+				ReasoningEffort: "high",
+			})
+			generateOnce(t, m, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+			if len(*bodies) != 1 {
+				t.Fatalf("expected 1 request, got %d", len(*bodies))
+			}
+			tt.check(t, (*bodies)[0])
+		})
+	}
+}

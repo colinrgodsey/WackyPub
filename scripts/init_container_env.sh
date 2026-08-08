@@ -46,6 +46,7 @@ cp -r ../skills/wackypub main/skills/
 mkdir main/tools
 ln -sf /usr/bin/bash main/tools/bash
 ln -sf /usr/bin/sed main/tools/sed
+ln -sf /bin/wackypub main/tools/wackypub
 ln -s ../main/tools sub1/tools
 ln -s ../main/tools sub2/tools
 

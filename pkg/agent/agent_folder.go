@@ -367,14 +367,19 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 
 	// 4. Initialize LLM Model adapter
 	var llmModel model.LLM
-	if runtimeCfg.Endpoint != "" {
+	switch runtimeCfg.Provider {
+	case "anthropic":
+		llmModel = NewAnthropicModel(runtimeCfg)
+	case "openai", "openai-compatible":
 		llmModel = NewOpenAIModel(runtimeCfg)
-	} else {
+	case "gemini":
 		geminiModel, err := CreateGeminiModel(context.Background(), runtimeCfg.Model, runtimeCfg.APIKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create fallback model for %s: %w", agentID, err)
+			return nil, fmt.Errorf("failed to create Gemini model for %s: %w", agentID, err)
 		}
 		llmModel = geminiModel
+	default:
+		return nil, fmt.Errorf("unsupported provider %q in runtime.json for agent %s (supported: openai, gemini, anthropic)", runtimeCfg.Provider, agentID)
 	}
 
 	// 5. Build ADK functiontools for agent
@@ -391,8 +396,8 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 		maxToolTurns = DefaultMaxToolTurns
 	}
 
-	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, model, and tools
-	ag, err := BuildADKAgent(agentID, expandedPrompt, maxToolTurns, llmModel, toolsList...)
+	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, runtimeCfg, model, and tools
+	ag, err := BuildADKAgentWithConfig(agentID, expandedPrompt, maxToolTurns, runtimeCfg, llmModel, toolsList...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build ADK agent for folder agent %s: %w", agentID, err)
 	}

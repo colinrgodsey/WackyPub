@@ -5,15 +5,43 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // RuntimeConfig represents the agent's runtime.json configuration.
 type RuntimeConfig struct {
+	// Provider selects the model provider: "openai" (default when Endpoint is set),
+	// "gemini" (default when Endpoint is empty), or "anthropic".
+	Provider string `json:"provider,omitempty"`
+
 	Endpoint          string  `json:"endpoint"`
 	Model             string  `json:"model"`
 	APIKey            string  `json:"apiKey"`
 	SessionCompactPct float64 `json:"sessionCompactPct"`
 	ContextWindow     int     `json:"contextWindow"`
+
+	// Anthropic-specific thinking fields:
+	AnthropicThinkingBudgetTokens *int   `json:"anthropicThinkingBudgetTokens,omitempty"`
+	AnthropicThinkingEffort       string `json:"anthropicThinkingEffort,omitempty"`
+	AnthropicThinkingMode         string `json:"anthropicThinkingMode,omitempty"`
+
+	// Gemini-specific thinking fields:
+	GeminiThinkingBudget  *int   `json:"geminiThinkingBudget,omitempty"`
+	GeminiThinkingLevel   string `json:"geminiThinkingLevel,omitempty"`
+	GeminiIncludeThoughts *bool  `json:"geminiIncludeThoughts,omitempty"`
+
+	// OpenAI / OpenRouter-specific reasoning fields:
+	ReasoningEffort          string         `json:"reasoningEffort,omitempty"`
+	ReasoningEgress          string         `json:"reasoningEgress,omitempty"`
+	ReasoningField           string         `json:"reasoningField,omitempty"`
+	SupportsReasoningDetails bool           `json:"supportsReasoningDetails,omitempty"`
+	ExtraBody                map[string]any `json:"extraBody,omitempty"`
+
+	// Generic thinking aliases (fallback if provider-specific fields are unset):
+	ThinkingBudgetTokens *int   `json:"thinkingBudgetTokens,omitempty"`
+	ThinkingEffort       string `json:"thinkingEffort,omitempty"`
+	ThinkingMode         string `json:"thinkingMode,omitempty"`
+
 	// PreserveThinking should be set for backends that resend and bill for
 	// prior reasoning/thinking text on every turn (e.g. Kimi K2 Thinking,
 	// DeepSeek V4 thinking mode, or any provider used with reasoning egress
@@ -24,38 +52,6 @@ type RuntimeConfig struct {
 	// default (e.g. Qwen3), where thinking never counts toward future
 	// requests' token usage.
 	PreserveThinking bool `json:"preserveThinking,omitempty"`
-	// ReasoningEgress selects the wire shape used to send a thought Part back
-	// as history: "native" (default, empty) sends reasoning as its own field
-	// on the assistant message — required by DeepSeek V4 thinking mode and
-	// Kimi K2 Thinking. "think_tags" folds it into "content" wrapped in a
-	// <think> block instead, for backends that reject an unknown field with a
-	// 400 (observed on Mistral, TensorRT-LLM, and some gateways). "omit"
-	// sends no reasoning at all, for backends that ignore replayed reasoning
-	// anyway (e.g. Qwen3 by default) or to save prompt tokens.
-	ReasoningEgress string `json:"reasoningEgress,omitempty"`
-	// ReasoningField names the provider's plain-text reasoning field, read on
-	// ingest and written on egress. Empty means "reasoning_content" (the
-	// adk-utils-go default). OpenRouter returns reasoning under "reasoning"
-	// and only accepts "reasoning_content" as an input alias, so set this to
-	// "reasoning" there or nothing is read back.
-	ReasoningField string `json:"reasoningField,omitempty"`
-	// SupportsReasoningDetails allows OpenRouter's structured
-	// reasoning_details array (typed blocks, including encrypted/signed
-	// reasoning) to be sent back as history. Leave off for backends that
-	// don't know the field. Reasoning details found in a response are always
-	// captured on the Part regardless of this setting, so enabling it later
-	// still replays what earlier turns recorded.
-	SupportsReasoningDetails bool `json:"supportsReasoningDetails,omitempty"`
-	// ExtraBody carries provider extensions that Chat Completions does not
-	// define, merged into the root of every request body. OpenRouter's
-	// reasoning controls live here, e.g.:
-	//
-	//	"extraBody": {"reasoning": {"effort": "high"}}
-	//
-	// Values must be JSON-serialisable. A key that collides with a field the
-	// adapter sets replaces it on the wire, so this is an extension point,
-	// not a way to rewrite messages or model.
-	ExtraBody map[string]any `json:"extraBody,omitempty"`
 }
 
 // LoadRuntimeConfig reads and unmarshals runtime.json for an agent.
@@ -88,6 +84,16 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	if cfg.SessionCompactPct <= 0 {
 		cfg.SessionCompactPct = 50.0
 	}
+
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	if provider == "" {
+		if cfg.Endpoint != "" {
+			provider = "openai"
+		} else {
+			provider = "gemini"
+		}
+	}
+	cfg.Provider = provider
 
 	return &cfg, nil
 }
