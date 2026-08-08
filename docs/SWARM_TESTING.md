@@ -28,6 +28,41 @@ running the test. Destroy and recreate the container between test runs so
 a prior round's fixtures (symlinks, planted files, whatever the swarm built)
 never leak into the next one.
 
+## Setup: the local trusted agent's job, not a fixed script
+
+There is deliberately no automation script for standing up a swarm test.
+Whoever runs one - in practice, a local trusted CLI agent (e.g. Claude Code)
+already operating in this repo with `.agents/` loaded - is expected to
+build the containerized workspace itself: reusing the existing container
+infra (`scripts/run_container.sh`, `scripts/init_container_env.sh`,
+`scripts/destroy_container.sh`) and `container-ws/`'s established
+`main`/`sub1`/`sub2` pattern as a reference, generalized to one coordinator
+and N workers for this specific target and boundary. A swarm test is
+already an expensive, infrequent thing to run, and every run's specifics
+(which tool, what grant, how many workers, white-box or not) differ enough
+that a rigid script would mostly get in the way - judgment from an agent
+that's actually read this doc and `SECURITY_TESTING.md` is more reliable
+here than a fixed recipe.
+
+**Persona templates to start from**: `agents/pen-escape-testing/COORDINATOR.md`
+and `agents/pen-escape-testing/WORKER.md` - copy these in as the
+coordinator's and each worker's `AGENTS.md` (matching how `container/`'s
+`MAIN.md`/`SUB.md` are used), adapting as needed for the specific test.
+These are meant to be iterated on across test runs, not treated as frozen -
+if a run reveals the coordinator or worker persona needs to behave
+differently, update the template, not just that one run's copy.
+
+Judgment calls the setting-up agent needs to make per run, informed by this
+doc and `SECURITY_TESTING.md`: how many workers; whether workers get the
+target tool's source (white-box) or just the binary (black-box); what
+sandbox/grant to hand the target tool (e.g. a `files-rw` test's
+`FILES_RW_ACCESS`, with some planted content that should be unreachable);
+which model to point `runtime.json` at (a genuinely capable one - see
+`SECURITY_TESTING.md`'s "who's qualified" bar, not the lightweight default
+used for routine dev work); and `iterations` for this run. All of these end
+up recorded in the resulting `docs/<tool>-security-test.md` report, not
+just decided silently.
+
 ## Roles
 
 ### Coordinator
