@@ -56,9 +56,9 @@ func convertThinkingLevel(level string) genai.ThinkingLevel {
 	}
 }
 
-func getGeminiThinkingConfig(cfg *RuntimeConfig) *genai.ThinkingConfig {
+func getGeminiThinkingConfig(cfg *RuntimeConfig) (*genai.ThinkingConfig, error) {
 	if cfg == nil || cfg.Provider != "gemini" {
-		return nil
+		return nil, nil
 	}
 
 	budget := cfg.GeminiThinkingBudget
@@ -71,8 +71,16 @@ func getGeminiThinkingConfig(cfg *RuntimeConfig) *genai.ThinkingConfig {
 		level = cfg.ThinkingEffort
 	}
 
+	// Gemini's API rejects a request that sets both - "You can only set only
+	// one of thinking budget and thinking level." Fail loudly here instead
+	// of silently picking one: a runtime.json with both set is a config
+	// mistake worth surfacing, not something to guess through.
+	if budget != nil && level != "" {
+		return nil, fmt.Errorf("runtime.json sets both geminiThinkingBudget/thinkingBudgetTokens and geminiThinkingLevel/thinkingEffort - Gemini only accepts one, set only one of them")
+	}
+
 	if budget == nil && level == "" && cfg.GeminiIncludeThoughts == nil {
-		return nil
+		return nil, nil
 	}
 
 	include := true
@@ -90,7 +98,7 @@ func getGeminiThinkingConfig(cfg *RuntimeConfig) *genai.ThinkingConfig {
 	if level != "" {
 		tc.ThinkingLevel = convertThinkingLevel(level)
 	}
-	return tc
+	return tc, nil
 }
 
 // BuildADKAgentWithConfig constructs a Google ADK LLMAgent for an agent directory, applying RuntimeConfig settings.
@@ -100,7 +108,10 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 	}
 	var modelCalls int
 
-	thinkingConfig := getGeminiThinkingConfig(runtimeCfg)
+	thinkingConfig, err := getGeminiThinkingConfig(runtimeCfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid thinking config for agent %q: %w", agentID, err)
+	}
 
 	cfg := llmagent.Config{
 		Name:        agentID,
