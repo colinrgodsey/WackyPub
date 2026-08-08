@@ -12,6 +12,27 @@ On top of that foundation, an agent can be handed capabilities the same way: a `
 
 ---
 
+## Quick Start
+
+**Prerequisites:** Go and Docker.
+
+```bash
+./scripts/run_container.sh /path/to/your/runtime.json
+```
+
+That's it — from the repo root, this builds `wackypub`, builds and launches a small Ubuntu container as a daemon, and drops you straight into an interactive REPL talking to `main`, an agent running inside it. (First run needs a real `runtime.json` — see [`examples/runtimes/`](examples/runtimes) for a template to copy and fill in a key. Every run after that just needs `./scripts/run_container.sh`, no argument.)
+
+What makes this worth trying isn't the container - it's how little is actually in it. `main` has two sub-agents (`sub1`, `sub2`) it's allowed to delegate to, and that's the entire environment:
+
+- **One skill**: the `wackypub` skill itself - a short, always-loaded primer on how to self-discover the CLI via `--help`. Nothing else is pre-loaded.
+- **A handful of lines of actual instruction** in each agent's `AGENTS.md` - "you manage an ubuntu system with full root access," how to invoke `bash`, and (for `main` only) "don't let your sub-agents cheat." See [`agents/container/`](agents/container) for the exact text - it's short enough to read in full.
+- **Two commands wired up as tools**: `bash` and `sed`. `wackypub` itself is just on the container's `PATH`, not a registered tool - so even *reaching a sub-agent* happens through `bash -c "wackypub agent prompt sub1 ..."`, not a dedicated mechanism.
+- **The built-in scratchpad and skill tools** (`create_scratchpad`, `get_scratchpad`, `list_scratchpads`, `load_skill`) - the same ones every agent gets for free, nothing container-specific.
+
+No file-editing tool, no curated command list, no task-specific scaffolding. Ask `main` to do something real - write a script, look something up, coordinate its sub-agents on a piece of work - and it figures out the rest from `--help` and first principles. When you're done, `./scripts/destroy_container.sh` tears down the container, image, and workspace.
+
+---
+
 ## Philosophy
 
 **The CLI is the interface — for you and for the agent.** Most agent frameworks give the model a bespoke tool schema and hide the CLI behind an SDK. WackyPubAI does the opposite: the thing an agent gets access to *is* `wackypub` itself, constrained to run one command at a time. `--help` at every level has to be complete enough to drive correctly with zero external documentation, because that's genuinely all an agent has. If a human can figure out the tool from `--help` alone, so can a model — and that constraint has caught real, non-hypothetical bugs (a `--help` routing gap, a misleading error label) that would never have surfaced from an SDK-only design.
