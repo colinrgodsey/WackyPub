@@ -67,7 +67,7 @@ func TestScratchpadEvictionCap(t *testing.T) {
 	agentDir := t.TempDir()
 
 	var firstID string
-	for i := 1; i <= 51; i++ {
+	for i := 1; i <= MaxScratchpadEntries+1; i++ {
 		entry, err := CreateScratchpad(agentDir, fmt.Sprintf("Entry %d", i), "test")
 		if err != nil {
 			t.Fatalf("CreateScratchpad failed at %d: %v", i, err)
@@ -82,11 +82,11 @@ func TestScratchpadEvictionCap(t *testing.T) {
 		t.Fatalf("ListScratchpads failed: %v", err)
 	}
 
-	if count != 50 {
-		t.Errorf("expected 50 live entries, got %d", count)
+	if count != MaxScratchpadEntries {
+		t.Errorf("expected %d live entries, got %d", MaxScratchpadEntries, count)
 	}
-	if capVal != 50 {
-		t.Errorf("expected cap 50, got %d", capVal)
+	if capVal != MaxScratchpadEntries {
+		t.Errorf("expected cap %d, got %d", MaxScratchpadEntries, capVal)
 	}
 	if items[0].Seq != 2 {
 		t.Errorf("expected lowest remaining seq to be 2, got %d", items[0].Seq)
@@ -182,8 +182,8 @@ func TestCreateScratchpad_ConcurrentCreations(t *testing.T) {
 	if count != numGoroutines {
 		t.Errorf("expected %d entries, got %d", numGoroutines, count)
 	}
-	if capVal != 50 {
-		t.Errorf("expected cap 50, got %d", capVal)
+	if capVal != MaxScratchpadEntries {
+		t.Errorf("expected cap %d, got %d", MaxScratchpadEntries, capVal)
 	}
 	if len(items) != numGoroutines {
 		t.Errorf("expected %d items, got %d", numGoroutines, len(items))

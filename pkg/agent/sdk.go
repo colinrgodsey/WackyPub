@@ -22,7 +22,7 @@ func NewSDK(workspaceDir string) *AgentSDK {
 	}
 	return &AgentSDK{
 		WorkspaceDir: workspaceDir,
-		MaxToolTurns: 10,
+		MaxToolTurns: DefaultMaxToolTurns,
 	}
 }
 

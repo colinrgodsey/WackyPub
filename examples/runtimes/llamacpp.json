@@ -1,0 +1,7 @@
+{
+  "endpoint": "http://localhost:8080/v1",
+  "model": "local-model",
+  "apiKey": "",
+  "sessionCompactPct": 50.0,
+  "contextWindow": 32000
+}

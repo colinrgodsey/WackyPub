@@ -33,7 +33,7 @@ Supports adding user turns to session.jsonl and generating assistant responses p
 // wackypub agent <agent_id> add [message] OR wackypub agent add <agent_id> [message]
 var agentAddCmd = &cobra.Command{
 	Use:   "add [agent_id] [message]",
-	Short: "Add a user message turn to the agent session (<ws_dir>/<agent_id>/session.jsonl)",
+	Short: "Add a user message turn to the agent session",
 	Long: `Appends a single user-role turn to <ws_dir>/<agent_id>/session.jsonl. Does not generate a
 response - use "generate" afterward, or use "prompt" to do both atomically.
 
@@ -96,21 +96,30 @@ does not already exist.`,
 // wackypub agent <agent_id> generate OR wackypub agent generate <agent_id>
 var agentGenerateCmd = &cobra.Command{
 	Use:   "generate [agent_id]",
-	Short: "Generate the agent's turn from current session.jsonl using Google ADK",
+	Short: "Generate the agent's turn from current session using input previously queued with 'add'.",
 	Long: `Loads the agent from <ws_dir>/<agent_id>, evaluates whether session compaction is needed
 (based on runtime.json's contextWindow/sessionCompactPct - see docs/agents.md), then calls the
 configured model with the system prompt, MEMORY.md, and current session.jsonl history, and
 appends the resulting turn (including any reasoning/thinking part) to session.jsonl.
 
 Arguments:
-  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>). No message argument -
+             this command takes no other input. Use "prompt" to send a message and generate in
+             one call.
 
 Prints the generated final-answer text to stdout (reasoning/thinking text is excluded from
 what's printed, though it is still persisted to session.jsonl). Does not append a user turn
-first - the session must already end on a user turn, or generation will be based on whatever
-history currently exists. Use "prompt" to append a user turn and generate in one call.
+first - the session must already end on a user turn (errors otherwise, since generating
+against anything else just hands the model no new input to react to). Use "prompt" to append
+a user turn and generate in one call.
 
 Acquires the session lock for the duration of the operation.`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 1 {
+			return fmt.Errorf("generate takes only an agent_id, not a message (got %d extra argument(s)) - use \"wackypub agent prompt\" to send a message and generate in one call", len(args)-1)
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {

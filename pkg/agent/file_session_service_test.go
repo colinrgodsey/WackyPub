@@ -218,12 +218,15 @@ func TestMaxToolTurnsLimit(t *testing.T) {
 		t.Fatalf("BuildADKAgent failed: %v", err)
 	}
 
-	_, err = fa.GenerateTurn(context.Background())
-	if err == nil {
-		t.Fatalf("expected error due to max tool turns cap, got nil")
+	// Hitting the cap should stop the turn gracefully (a warning on stderr,
+	// not an error) rather than failing the whole generation - see
+	// BuildADKAgent's BeforeModelCallbacks.
+	resp, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error when the max tool turns cap is hit, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "exceeded maximum tool turns limit") {
-		t.Fatalf("expected max tool turns error message, got: %v", err)
+	if !strings.Contains(resp, "maximum of") || !strings.Contains(resp, "continue") {
+		t.Fatalf("expected a response hinting at the tool turn cap and how to continue, got: %q", resp)
 	}
 }
 

@@ -45,5 +45,7 @@ wackypub agent strip-reasoning --help
 - **Positional Agent Dispatch**: Both `wackypub agent <cmd> <agent_id> [args...]` and `wackypub agent <agent_id> <cmd> [args...]` (agent ID first) are supported.
 - **`--help` Ordering Caveat**: `--help` resolution does *not* honor the flexible agent-id-first ordering above — it only shows subcommand-specific help when the subcommand name comes directly after `agent` (e.g. `wackypub agent prompt --help`, not `wackypub agent <agent_id> prompt --help`). If `--help` on a subcommand unexpectedly shows the generic `agent` help instead, this ordering is almost always why.
 - **Workspace Discovery (`--ws`)**: Specify `--ws <path>` to target a workspace directory containing `WACKYPUB_ROOT`. If omitted, `wackypub` automatically walks up from CWD to find the nearest workspace root.
-- **Self-Expanding Arguments**: Positional arguments and stdin templates in `run_command` support `<SCRATCHPAD_DATA id="X" />` macro expansion for referencing stored scratchpad content.
 - **Cross-Agent Access is Gated**: An agent can only target other agents listed in its own `WACKYPUB_ALLOWED_AGENTS` file (default is deny-all if that file doesn't exist). Attempting to reach an unauthorized agent — including yourself, unless explicitly listed — fails with a clear authorization error rather than succeeding.
+
+### 4. Hints
+- `agent add` and `agent generate` are for advanced usage, simple request->response flows should generally use `agent prompt`.

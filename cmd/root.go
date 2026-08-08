@@ -75,5 +75,5 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&workspaceDir, "ws", ".", "workspace directory path (defaults to current working directory)")
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
-	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", 10, "Maximum consecutive tool-call turns allowed per generation")
+	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
 }

@@ -162,7 +162,8 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 			"- The working directory is always the agent's own directory - there's no way to cd elsewhere, since commands don't chain.\n"+
 			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
 			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
-			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.",
+			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n"+
+			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" /> macros (skip_lines/num_lines optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned the same way, so it can be piped straight into another command's args/stdin this way.",
 		cmdListStr,
 	)
 
@@ -387,7 +388,7 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 	}
 
 	if maxToolTurns <= 0 {
-		maxToolTurns = 10
+		maxToolTurns = DefaultMaxToolTurns
 	}
 
 	// 6. Construct ADK llmagent with agentID, expanded prompt instruction, maxToolTurns cap, model, and tools
@@ -411,8 +412,21 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 // GenerateTurn performs the agent generation turn for the current session using Google ADK runner.Runner.
 // Uses FileSessionService to read and write session history directly to session.jsonl.
 func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
+	// 0. The session must already end on a user turn - generating against a
+	// session that doesn't (empty, or already ends on a model turn) hands
+	// the model no new input to react to, which just produces a confused
+	// response. AddAndGenerateTurn (the "prompt" command) always satisfies
+	// this itself by appending a user turn first.
+	turns, err := ReadSessionTurns(fa.AgentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read session turns: %w", err)
+	}
+	if len(turns) == 0 || turns[len(turns)-1].Role != "user" {
+		return "", fmt.Errorf("cannot generate: session for agent %q does not end on a user turn - add one first (\"wackypub agent add\") or use \"wackypub agent prompt\" to do both in one call", fa.AgentID)
+	}
+
 	// 1. Check for context window compaction trigger before generating
-	_, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
+	_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
 	if err != nil {
 		// Log compaction warning, but continue execution if possible
 		fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)

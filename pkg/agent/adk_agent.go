@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/agent/llmagent"
@@ -12,6 +13,12 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
+
+// DefaultMaxToolTurns is the default cap on consecutive tool-call turns
+// within a single GenerateTurn call, used wherever a caller doesn't specify
+// one explicitly (the --max-tool-turns CLI flag, AgentSDK.NewSDK, and
+// BuildADKAgent/LoadFolderAgent's own <= 0 fallback).
+const DefaultMaxToolTurns = 300
 
 // CreateGeminiModel instantiates a native Gemini LLM model using Google ADK model package.
 func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (model.LLM, error) {
@@ -36,7 +43,7 @@ func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (mo
 // Name is agentID (unique within workspace), renderedPrompt is AGENTS.md system prompt, maxToolTurns caps tool executions.
 func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
 	if maxToolTurns <= 0 {
-		maxToolTurns = 10
+		maxToolTurns = DefaultMaxToolTurns
 	}
 	var modelCalls int
 
@@ -49,9 +56,20 @@ func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmM
 		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
 			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
 				modelCalls++
-				// First model call is initial prompt; subsequent model calls are tool loop turns
+				// First model call is initial prompt; subsequent model calls are tool loop turns.
+				// Stop short rather than error: the caller (human or controlling agent) gets a
+				// clear, successful turn back with a hint to send another message to continue,
+				// instead of losing whatever the tool loop already accomplished.
 				if modelCalls > maxToolTurns+1 {
-					return nil, fmt.Errorf("exceeded maximum tool turns limit (%d)", maxToolTurns)
+					fmt.Fprintf(os.Stderr, "Warning: agent %q reached the maximum tool-call turn limit (%d) for this generation - stopping early. Send another message (e.g. \"continue\") to let it keep going.\n", agentID, maxToolTurns)
+					return &model.LLMResponse{
+						Content: &genai.Content{
+							Role: "model",
+							Parts: []*genai.Part{
+								{Text: fmt.Sprintf("[Reached the maximum of %d consecutive tool calls for this turn - stopping here. Send another message (e.g. \"continue\") to keep going.]", maxToolTurns)},
+							},
+						},
+					}, nil
 				}
 				return nil, nil
 			},

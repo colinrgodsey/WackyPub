@@ -1,0 +1,15 @@
+{
+  "endpoint": "https://openrouter.ai/api/v1",
+  "model": "auto",
+  "apiKey": "",
+  "sessionCompactPct": 50.0,
+  "contextWindow": 200000,
+
+  "reasoningField": "reasoning",
+  "supportsReasoningDetails": false,
+  "extraBody": {
+    "reasoning": {
+      "effort": "high"
+    }
+  }
+}
