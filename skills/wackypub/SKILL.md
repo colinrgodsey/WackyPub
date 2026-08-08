@@ -38,7 +38,7 @@ wackypub agent read-session --help
 wackypub agent read-memory --help
 wackypub agent render-prompt --help
 wackypub agent compact --help
-wackypub agent strip-reasoning --help
+wackypub agent strip-signatures --help
 ```
 
 ### 3. Syntax & Execution Conventions
@@ -49,3 +49,49 @@ wackypub agent strip-reasoning --help
 
 ### 4. Hints
 - `agent add` and `agent generate` are for advanced usage, simple request->response flows should generally use `agent prompt`.
+
+## Setting Up an Agent & Swarm From Scratch
+
+Everything below is on-disk convention, not CLI flags — `wackypub workspace <agent_id>` will
+report what's present/missing for an existing agent, but won't tell you how to create these
+in the first place. `wackypub workspace` and `wackypub workspace <agent_id>` are still the
+first things to run — use them to check progress as you set each piece up.
+
+1. **New workspace needs a root marker.** `wackypub` refuses to treat a directory as a
+   workspace until it contains a `WACKYPUB_ROOT` file (any content, usually empty):
+   ```bash
+   mkdir -p ws && touch ws/WACKYPUB_ROOT
+   ```
+2. **`<ws_dir>/<agent_id>/runtime.json`** — the model backend config, required before an agent
+   can generate anything. Minimal example:
+   ```json
+   { "provider": "gemini", "model": "gemini-2.5-flash", "apiKey": "...", "sessionCompactPct": 50.0, "contextWindow": 200000 }
+   ```
+   `provider` is `"gemini"`, `"anthropic"`, or `"openai"`/`"openai-compatible"` (needs an
+   `endpoint` too). Full schema: `docs/agents.md` §3, if present in this checkout — not
+   guaranteed to ship alongside the binary. To point several agents at the same backend
+   config without duplicating it, symlink: `ln -s ../runtimes/shared.json ws/<agent_id>/runtime.json`.
+3. **`<ws_dir>/<agent_id>/tools/`** — how an agent gets tools. Any executable file (or a
+   symlink to one) placed in this directory, recursively, becomes a callable tool named after
+   the filename. To give an agent the `wackypub` CLI itself as a tool (needed for orchestrator/
+   coordinator agents that call sub-agents):
+   ```bash
+   ln -s "$(command -v wackypub)" ws/coordinator/tools/wackypub
+   ```
+   Two files resolving to the same tool name shadow each other (a warning, not an error —
+   `wackypub workspace <agent_id>` reports it).
+4. **`<ws_dir>/<agent_id>/skills/<skill_name>/SKILL.md`** — how an agent gets skills, same
+   shape as this file: YAML frontmatter with `name`, `description`, and `always_load`
+   (`true` injects it into every prompt unconditionally, like this file; `false` — the
+   default — makes it available on demand via the `load_skill` tool, discoverable by its
+   `description`).
+5. **`<ws_dir>/<agent_id>/WACKYPUB_ALLOWED_AGENTS`** — required for any cross-agent calling.
+   Plain text, one target agent ID per line; blank lines and `#`-prefixed lines are ignored:
+   ```
+   # sub-agents this coordinator may call
+   sub1
+   sub2
+   ```
+   Missing file = deny-all, even for calling yourself.
+6. **`<ws_dir>/<agent_id>/AGENTS.md`** — optional; a generic `"You are agent <id>."` prompt
+   is used if it's missing. This is where an agent's persona/instructions/role go.

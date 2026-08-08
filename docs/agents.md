@@ -363,7 +363,7 @@ Controlled by `reasoningEgress` and `supportsReasoningDetails`:
 - **`native`** (default): reasoning is sent back as its own field (named by `reasoningField`) on the assistant message, separate from `content`. Required by DeepSeek V4 thinking mode and Kimi K2 Thinking, which 400 if it's missing.
 - **`think_tags`**: reasoning is folded into `content`, wrapped in a `<think>...</think>` block, for backends that reject an unrecognized field with a 400 (observed on Mistral, TensorRT-LLM, some gateways).
 - **`omit`**: no reasoning is sent at all.
-- **`supportsReasoningDetails: true`**: additionally replays OpenRouter's structured `reasoning_details` block array verbatim (unmodified, unreordered — the sequence has to match what the model produced). **Only safe with a pinned `model`** — encrypted/signed reasoning blocks are tied to the exact backend endpoint that produced them, and OpenRouter's `"auto"` router can pick a different endpoint on the next turn, which gets rejected with a 404 ("Encrypted payloads can only be replayed to the endpoint that created them"). If `supportsReasoningDetails` is `false`, `StripReasoningDetails` removes any captured block metadata before a turn is persisted to `session.jsonl`, so a block captured while the setting was on doesn't sit around as dead weight (or a future stale-endpoint landmine) after it's turned off.
+- **`supportsReasoningDetails: true`**: additionally replays OpenRouter's structured `reasoning_details` block array verbatim (unmodified, unreordered — the sequence has to match what the model produced). **Only safe with a pinned `model`** — encrypted/signed reasoning blocks are tied to the exact backend endpoint that produced them, and OpenRouter's `"auto"` router can pick a different endpoint on the next turn, which gets rejected with a 404 ("Encrypted payloads can only be replayed to the endpoint that created them"). If `supportsReasoningDetails` is `false`, `StripSignatures` removes any captured block metadata before a turn is persisted to `session.jsonl`, so a block captured while the setting was on doesn't sit around as dead weight (or a future stale-endpoint landmine) after it's turned off.
 
 ### Forcing extended thinking
 
@@ -378,9 +378,9 @@ Some models (e.g. Claude via OpenRouter) don't emit reasoning by default — it 
 
 `ContentText` (used for the CLI's printed/returned response, and for `MEMORY.md` addenda) always excludes `Thought`-marked parts — reasoning is preserved in `session.jsonl` for full fidelity, but never shown as if it were the character's actual dialogue.
 
-### Manually stripping stale reasoning_details
+### Manually stripping stale reasoning/thought signatures
 
-If an agent's `session.jsonl` already contains `reasoning_details` block metadata from a prior backend (e.g. it was run against `"model": "auto"` on OpenRouter and picked up an encrypted block), and you're permanently moving it to a different model/endpoint, that stale block is a landmine — see [`wackypub agent <agent_id> strip-reasoning`](#8-cli-command-pipeline) below. It removes only the block metadata; readable `Thought` text is left in place.
+If an agent's `session.jsonl` already contains `reasoning_details` block metadata from a prior backend (e.g. it was run against `"model": "auto"` on OpenRouter and picked up an encrypted block), or a Gemini `ThoughtSignature` from before the agent was switched to a different provider, that stale signature is a landmine — see [`wackypub agent <agent_id> strip-signatures`](#8-cli-command-pipeline) below. It removes only the signature/block metadata; readable `Thought` text is left in place.
 
 ---
 
@@ -420,12 +420,13 @@ wackypub agent <agent_id> prompt [message]
 - Prints generated assistant text to `stdout`.
 - **Recommended over separate `add` + `generate`** for most use cases.
 
-### Strip Reasoning Details (`strip-reasoning`)
+### Strip Provider Signatures (`strip-signatures`)
 ```bash
-wackypub agent <agent_id> strip-reasoning
+wackypub agent <agent_id> strip-signatures
 ```
-- Permanently removes OpenRouter `reasoning_details` block metadata from every turn in `<ws_dir>/<agent_id>/session.jsonl`, rewriting the file in place under the session lock.
+- Permanently removes provider-specific opaque reasoning/thought signatures — OpenRouter `reasoning_details` block metadata and Gemini's `ThoughtSignature` field — from every turn in `<ws_dir>/<agent_id>/session.jsonl`, rewriting the file in place under the session lock.
 - Readable plain-text `Thought` reasoning is left untouched.
+- Run this before switching an agent's `runtime.json` to a different provider — a signature issued by the old provider is rejected outright if replayed to the new one (confirmed live: Anthropic 400s with `Invalid \`signature\` in \`thinking\` block` on a Gemini `ThoughtSignature`).
 
 ### Read Session (`read-session`)
 ```bash
@@ -516,8 +517,8 @@ prompt, err := sdk.RenderSystemPrompt("wizard")
 // Manually trigger session compaction evaluation (acquires session lock)
 compacted, err := sdk.CompactSession(ctx, "wizard")
 
-// Permanently strip OpenRouter reasoning_details block metadata from session.jsonl (acquires session lock)
-modified, err := sdk.StripReasoningDetails("wizard")
+// Permanently strip provider-specific reasoning/thought signatures from session.jsonl (acquires session lock)
+modified, err := sdk.StripSignatures("wizard")
 
 // List agent IDs found directly under the workspace directory
 ids, err := sdk.ListAgents()

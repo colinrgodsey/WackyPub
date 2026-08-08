@@ -101,10 +101,12 @@ to the endpoint that created them"). This was hit and confirmed live, not
 just inferred from docs. `supportsReasoningDetails: true` is only safe with
 `model` pinned to a specific slug.
 
-**Corollary**: `StripReasoningDetails`/`StripSessionReasoningDetails` exist
+**Corollary**: `StripSignatures`/`StripSessionSignatures` exist
 specifically to remove stale block metadata (never readable `Thought` text)
-when an agent switches away from a backend that emitted encrypted blocks -
-see the `strip-reasoning` CLI command.
+when an agent switches away from a backend that emitted encrypted blocks, or
+between providers entirely (also covers Gemini's `ThoughtSignature` field,
+confirmed live to be rejected outright when replayed to Anthropic) - see the
+`strip-signatures` CLI command.
 
 ## D7: `ContentText` always excludes `Thought`-marked parts
 

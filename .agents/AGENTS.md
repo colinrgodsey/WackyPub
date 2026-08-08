@@ -94,7 +94,7 @@ go build -o wackypub .
 WackyPubAI/
 ├── cmd/                    # Cobra CLI command tree
 │   ├── root.go             # RootCmd, global flags (--ws, --config, -m, --api-key)
-│   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-reasoning,
+│   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-signatures,
 │   │                         # read-session, read-memory, render-prompt, compact
 │   ├── workspace.go         # `workspace` - read-only workspace/agent diagnostic (see below)
 │   └── version.go           # `version`
@@ -103,7 +103,7 @@ WackyPubAI/
 │   │   ├── runtime.go         # RuntimeConfig (runtime.json schema) + loader
 │   │   ├── session_store.go   # session.jsonl read/write, ContentText, EstimateTokens, MergeConsecutiveUserTurns
 │   │   ├── agent_folder.go    # FolderAgent: loads an agent dir, GenerateTurn (the main generation path)
-│   │   ├── openai_model.go    # NewOpenAIModel adapter wrapper, StripReasoningDetails
+│   │   ├── openai_model.go    # NewOpenAIModel adapter wrapper, StripSignatures
 │   │   ├── adk_agent.go       # BuildADKAgent (llmagent.New) + CreateGeminiModel - alternate ADK Runner path
 │   │   ├── compaction.go      # CheckAndCompactSession - MEMORY.md summarization + session pruning
 │   │   ├── macro.go           # @<FILE_PATH> expansion for AGENTS.md
@@ -228,7 +228,7 @@ shape demanded it, not because of a general design goal.
 
 ### CLI command pattern: cobra subcommand + positional dispatcher
 
-Every `agent` subcommand (`add`, `generate`, `prompt`, `strip-reasoning`,
+Every `agent` subcommand (`add`, `generate`, `prompt`, `strip-signatures`,
 `read-session`, `read-memory`, `render-prompt`, `compact`) is registered
 twice: once as a normal cobra subcommand (`wackypub agent add ...`), and
 once as a branch in
@@ -283,8 +283,8 @@ operation, not a side effect of inspection.
 - `pkg/agent/openai_model_test.go` covers the OpenAI adapter's
   reasoning-handling wiring (`reasoningEgress` modes, `ReasoningField`,
   `SupportsReasoningDetails`, `ExtraBody`) using `httptest`-mocked
-  wire-payload assertions, plus `StripReasoningDetails`/
-  `StripSessionReasoningDetails`. `MergeConsecutiveUserTurns` is covered in
+  wire-payload assertions, plus `StripSignatures`/
+  `StripSessionSignatures`. `MergeConsecutiveUserTurns` is covered in
   `pkg/agent/session_store_test.go`. Extend these before reaching for a
   scratch program - see LOCAL_TESTING.md.
 - What automated tests *can't* cover: whether a real provider actually
@@ -360,7 +360,7 @@ check `cmd/root.go`'s persistent flags first.
    caller importing `pkg/agent` reads instead of `--help`, so write it as
    the canonical description, not CLI-specific throwaway text.
 2. Add the `cobra.Command` in `cmd/agent.go`, following the existing
-   `add`/`generate`/`prompt`/`strip-reasoning` shape (load the SDK, resolve
+   `add`/`generate`/`prompt`/`strip-signatures` shape (load the SDK, resolve
    `agent_id` from args, call the `AgentSDK` method, print a result). Write
    `Short`/`Long` and flag help text for an agent-platform caller driving
    this from `--help` output, not just a human - see the CLI/SDK

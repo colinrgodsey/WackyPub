@@ -84,7 +84,7 @@ WackyPubAI/
 ├── main.go                     # Binary entry point
 ├── cmd/                        # CLI Cobra subcommands
 │   ├── root.go                 # Persistent flags (--ws, --config, -m, --api-key, --max-tool-turns)
-│   ├── agent.go                # agent <id> add/generate/prompt/read-session/read-memory/render-prompt/compact/strip-reasoning
+│   ├── agent.go                # agent <id> add/generate/prompt/read-session/read-memory/render-prompt/compact/strip-signatures
 │   ├── workspace.go            # workspace [agent_id] - read-only diagnostics
 │   └── version.go              # Version and build details
 └── pkg/                        # Core Go packages
@@ -173,8 +173,9 @@ $ wackypub --help
 # Manually trigger compaction (normally automatic during generate/prompt)
 ./wackypub agent compact my_agent
 
-# Strip stale OpenRouter encrypted reasoning blocks after switching models
-./wackypub agent strip-reasoning my_agent
+# Strip stale reasoning/thought signatures (OpenRouter encrypted blocks, Gemini
+# ThoughtSignature) after switching models or providers
+./wackypub agent strip-signatures my_agent
 ```
 
 `wackypub agent <cmd> <agent_id>` and `wackypub agent <agent_id> <cmd>` are both supported for real invocation (though `--help` only resolves correctly with the subcommand name first — put it right after `agent`).

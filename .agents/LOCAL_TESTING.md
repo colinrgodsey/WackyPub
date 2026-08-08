@@ -358,7 +358,8 @@ against a real backend:
   be in a valid-but-incomplete state (trailing user turn, no response yet),
   which is fine to resume from, or it may need a turn trimmed first if the
   failure was caused by something now baked into history (like a stale
-  encrypted reasoning block - see `strip-reasoning`).
+  encrypted reasoning block or cross-provider thought signature - see
+  `strip-signatures`).
 - A high-reasoning-effort model (e.g. `extraBody.reasoning.effort: "high"`)
   chaining several tool calls in one turn can genuinely take multiple
   minutes for a single `prompt`/`generate` call - this is normal, not a

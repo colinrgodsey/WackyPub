@@ -25,7 +25,7 @@ The official `openai-go/v3` SDK (used by `adk-utils-go`'s `genai/openai` adapter
 with no timeout. The read-only SDK methods that used to call it
 unnecessarily were fixed to not lock at all (see the self-deadlock fix
 found live via clerk), but the genuinely mutating methods (`AddUserTurn`,
-`GenerateTurn`, `AddAndGenerateTurn`, `StripReasoningDetails`,
+`GenerateTurn`, `AddAndGenerateTurn`, `StripSignatures`,
 `CompactSession`) still correctly need to hold it, and still block
 indefinitely if something else is holding it - a real deadlock we haven't
 found yet, or just a second legitimate caller genuinely waiting its turn.
