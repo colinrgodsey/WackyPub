@@ -4,6 +4,39 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
+## Real, explicit native Gemini runtime support
+
+`CreateGeminiModel` (`pkg/agent/adk_agent.go`) exists, but it's only ever
+reached as an implicit fallback in `LoadFolderAgent` when `runtime.json`
+has no `endpoint` set - there's no explicit way to *choose* native Gemini,
+only to fall into it by omission. It also doesn't wire up any of the
+reasoning/thinking configuration the OpenAI adapter has
+(`reasoningEgress`, `reasoningField`, `supportsReasoningDetails`,
+`extraBody`) - Gemini's native "thinking" config shape in the `genai` SDK
+is its own thing, not the OpenAI-wire-format convention those fields
+target, so this isn't just "already works, just undocumented."
+
+## Native Anthropic runtime support via the adk-utils-go fork
+
+The `adk-utils-go` fork already has a ready-to-use Anthropic adapter -
+`github.com/achetronic/adk-utils-go/genai/anthropic.New(cfg Config) *Model`,
+same shape as the `openai` package `NewOpenAIModel` already wraps (see
+`examples/anthropic-client` in the module for the reference usage,
+including its own reasoning knobs: `THINKING_BUDGET_TOKENS`,
+`THINKING_EFFORT`, `THINKING_MODE`). Nothing in WackyPubAI reaches it at
+all right now - `LoadFolderAgent` only ever chooses between the OpenAI
+adapter and the Gemini fallback above. Needs a `NewAnthropicModel`
+wrapper mirroring `NewOpenAIModel`'s shape, plus `RuntimeConfig` fields
+for Anthropic's own thinking-budget/effort knobs (distinct from both the
+OpenAI and Gemini reasoning conventions - three different shapes, not one).
+
+Both of these want the same missing piece: `runtime.json` has no explicit
+provider-selection field today (native Gemini is chosen by *absence* of
+`endpoint`, nothing chooses Anthropic at all). A `provider` field
+(`"openai"` default | `"gemini"` | `"anthropic"`) would give all three a
+real, explicit selection mechanism instead of inferring it, and leaves
+room for a fourth later.
+
 ## Consider a timeout on session lock acquisition
 
 `AcquireSessionLock` (`pkg/agent/lock.go`) blocks forever on `syscall.Flock`
