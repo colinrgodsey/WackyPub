@@ -4,6 +4,56 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
+## Skills system: distilled, discoverable knowledge for agents
+
+Live testing repeatedly showed agents "hunt and peck" to figure out how to
+drive `wackypub` correctly - calling
+`--help`, misreading subcommand structure, needing several failed attempts
+before landing on a working invocation (see D17's tool protocol). A skills
+system would let an agent load pre-written, distilled guidance instead of
+re-deriving it from raw `--help` output every single time.
+
+Proposed shape, modeled on D14's `tools/` discovery:
+- A `skills/` folder, recursively discovered the same way `tools/` is -
+  plain files/folders, no bespoke DSL.
+- Each skill is markable as either **always-loaded** (its content is
+  injected into context automatically every generation, e.g. folded into
+  the system prompt or first turn) or **on-demand** (only a short
+  description is always visible; the agent chooses to load the full
+  content, similar to how tools are discovered but not necessarily
+  invoked).
+- Otherwise should behave like a typical skill system (e.g. Claude Code's
+  own Skill tool) - not a novel format.
+
+Not yet designed: how on-demand loading is triggered (a built-in tool
+alongside `get_scratchpad`? a CLI subcommand agents call directly?), how
+skill content composes with `tools/` discovery output in the same prompt,
+and whether skills are workspace-global or per-agent.
+
+## No total budget on cross-agent call depth, only cycle prevention
+
+`WACKYPUB_CALL_CHAIN` (D16) stops an agent from being re-entered mid-chain
+(A -> B -> A), but nothing caps how long or expensive a legitimate, acyclic
+chain can get. Live testing showed an agent can chain multiple cross-agent
+calls to a peer agent entirely on its own within a single generation turn
+(see D16/D17); nothing currently stops that same pattern from fanning out
+across several agents on one bad turn. Worth
+adding a max-depth counter alongside the existing cycle check - likely
+threaded through `WACKYPUB_CALL_CHAIN` the same way `--max-tool-turns`
+caps a single agent's own tool loop.
+
+## No automated test coverage for live cross-agent tool invocation
+
+Discovery (symlinked toolpacks), single-agent tool execution, cross-agent
+`wackypub agent <id> prompt` invocation via `WACKYPUB_ALLOWED_AGENTS`, and
+model-driven multi-hop chaining (one agent calling another twice in a row
+based on the first response) have all been verified live against real
+LLM backends, but only manually - there's no committed test that exercises
+a bob-style agent invoking a peer agent as a subprocess. A synthetic test
+using `httptest` (mocking the model backend the way `openai_model_test.go`
+already does) that drives a two-agent chain end-to-end would catch a
+regression here without requiring a live LLM call.
+
 ## Dedicated `wackypub init` command
 
 Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.
