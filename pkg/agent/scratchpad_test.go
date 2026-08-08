@@ -76,3 +76,26 @@ func TestExecuteTool_ScratchpadRedirection(t *testing.T) {
 		t.Fatalf("unexpected scratchpad 20 content: %q", outputVal)
 	}
 }
+
+func TestExecuteTool_StdinScratchpadNotSet(t *testing.T) {
+	agentDir := t.TempDir()
+
+	toolPath := filepath.Join(agentDir, "pipe_tool.sh")
+	script := "#!/bin/sh\nread input\necho \"Processed: $input\"\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	// Reference a scratchpad slot that was never set (simulates the concurrent
+	// set_scratchpad + consuming-call-in-the-same-turn race: the read loses).
+	stdinID := 99
+	args := ExecToolArgs{StdinScratchpadID: &stdinID}
+
+	_, err := executeTool(context.Background(), agentDir, "pipe_tool.sh", toolPath, args)
+	if err == nil {
+		t.Fatalf("expected an error for an unset scratchpad slot, got nil")
+	}
+	if !strings.Contains(err.Error(), "scratchpad 99 has not been set") {
+		t.Fatalf("unexpected error message: %q", err.Error())
+	}
+}

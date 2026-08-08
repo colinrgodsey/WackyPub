@@ -407,6 +407,11 @@ Executable tool declarations in `<agent_dir>/tools/` include optional integer pr
 
 **Why**: Passing large command outputs directly through session history inflates model context budgets and token costs. A persistent session-scoped scratchpad allows tools to pipe large payloads to one another or store outputs by integer ID without polluting prompt history.
 
+**Concurrent Same-Turn Race**:
+- Google ADK dispatches every `FunctionCall` in a single model response concurrently (its own `handleFunctionCalls` spawns one goroutine per call), with no ordering guarantee. A model that calls `set_scratchpad` and something consuming that slot (`get_scratchpad`, `stdin_scratchpad_id`) in the *same* turn can have the read execute before the write lands, silently piping the read side's placeholder text as if it were real content.
+- Mitigated two ways: the tool descriptions for `set_scratchpad`, `get_scratchpad`, and the `stdin_scratchpad_id`/`stdout_scratchpad_id` params explicitly tell the model not to combine a write and its matching read in one turn; and `executeTool`'s `stdin_scratchpad_id` path now returns a real error (not the `"Scratchpad N is empty"` placeholder) when the referenced slot doesn't exist yet, so a model that ignores the guidance gets a loud, retriable failure instead of silently corrupted input.
+- Neither fixes the race itself - both are behavioral nudges/safety nets, not a structural fix. See TODOS.md's auto-incrementing-scratchpad-ID entry for the actual structural fix under consideration.
+
 ## D19: Folder agents migrate to Google ADK `runner.Runner` backed by `FileSessionService`
 
 Agent generation turns migrate from manual `model.LLMRequest` construction to Google ADK's `runner.Runner` engine, backed by a custom `FileSessionService` (`pkg/agent/file_session_service.go`).

@@ -54,6 +54,30 @@ using `httptest` (mocking the model backend the way `openai_model_test.go`
 already does) that drives a two-agent chain end-to-end would catch a
 regression here without requiring a live LLM call.
 
+## Auto-assign scratchpad IDs instead of letting the agent choose them
+
+`set_scratchpad(id, text)` currently lets the model pick an arbitrary
+integer ID. This has two problems: the model can accidentally collide with
+or overwrite an older, still-relevant slot (a "stale ID" reused by
+mistake), and it lets the model reference a slot before the write that
+creates it has actually completed - which is exactly the concurrency race
+documented in D18/D19 (ADK dispatches every function call in a single
+model turn concurrently via goroutines, so `set_scratchpad` and a
+`stdin_scratchpad_id`-consuming call in the *same* turn can run in either
+order). The current mitigation is a tool-description warning telling the
+model not to combine them in one turn, plus a loud error instead of silent
+placeholder text if it does - both are behavioral nudges/safety nets, not
+a structural fix.
+
+If `set_scratchpad` (and the auto-created slot behind `stdout_scratchpad_id`)
+stopped taking a caller-chosen ID and instead always returned a freshly
+auto-incremented one, the model would be structurally unable to reference
+a slot before seeing the response that creates it - it wouldn't know the
+ID yet. That closes the race by construction rather than by asking the
+model nicely. Would need `get_scratchpad`/`stdin_scratchpad_id` to keep
+taking an ID (reads still need to name what they're reading), just not
+writes.
+
 ## Dedicated `wackypub init` command
 
 Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.

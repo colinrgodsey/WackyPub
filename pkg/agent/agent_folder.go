@@ -39,8 +39,8 @@ type GetScratchpadResult struct {
 type ExecToolArgs struct {
 	Args               []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool"`
 	Env                map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation"`
-	StdinScratchpadID  *int              `json:"stdin_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to pipe as stdin into the command"`
-	StdoutScratchpadID *int              `json:"stdout_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to redirect stdout output into"`
+	StdinScratchpadID  *int              `json:"stdin_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to pipe as stdin into the command. The slot must have been set by set_scratchpad in an EARLIER turn, not this same one - tool calls within one turn may run concurrently, so a set_scratchpad call earlier in this same response is not guaranteed to have finished yet."`
+	StdoutScratchpadID *int              `json:"stdout_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to redirect stdout output into. Do not read this slot with get_scratchpad in the same turn - wait until your next turn, since the write may not have finished yet."`
 }
 
 type ExecToolResult struct {
@@ -65,7 +65,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 1. set_scratchpad
 	setTool, err := functiontool.New(functiontool.Config{
 		Name:        "set_scratchpad",
-		Description: "Save a text payload or intermediate command output into a persistent session scratchpad slot by integer ID.",
+		Description: "Save a text payload or intermediate command output into a persistent session scratchpad slot by integer ID. IMPORTANT: tool calls within the same turn may execute concurrently - do not set a slot and then reference it (via get_scratchpad or stdin_scratchpad_id) in that same turn. Set it now, use it on your next turn.",
 	}, func(ctx agent.Context, args SetScratchpadArgs) (SetScratchpadResult, error) {
 		out, err := SetScratchpad(agentDir, args.ID, args.Text)
 		if err != nil {
@@ -81,7 +81,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 2. get_scratchpad
 	getTool, err := functiontool.New(functiontool.Config{
 		Name:        "get_scratchpad",
-		Description: "Retrieve stored text from a persistent session scratchpad slot by integer ID.",
+		Description: "Retrieve stored text from a persistent session scratchpad slot by integer ID. IMPORTANT: do not read a slot in the same turn as a set_scratchpad call or a stdout_scratchpad_id write targeting it - tool calls within one turn may execute concurrently, so the write is not guaranteed to have finished yet. Wait until your next turn.",
 	}, func(ctx agent.Context, args GetScratchpadArgs) (GetScratchpadResult, error) {
 		out, err := GetScratchpad(agentDir, args.ID)
 		if err != nil {
@@ -270,10 +270,15 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	}
 
 	if args.StdinScratchpadID != nil {
-		stdinText, err := GetScratchpad(agentDir, *args.StdinScratchpadID)
-		if err == nil {
-			cmd.Stdin = strings.NewReader(stdinText)
+		sp, err := ReadScratchpad(agentDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to read scratchpad: %w", err)
 		}
+		stdinText, ok := sp[*args.StdinScratchpadID]
+		if !ok {
+			return "", fmt.Errorf("scratchpad %d has not been set - set_scratchpad must complete in an earlier turn before it can be used as stdin", *args.StdinScratchpadID)
+		}
+		cmd.Stdin = strings.NewReader(stdinText)
 	} else if len(args.Args) > 0 || len(args.Env) > 0 {
 		argsJSON, err := json.Marshal(args)
 		if err == nil {
