@@ -11,9 +11,10 @@ Agent guidelines for working in the `WackyPubAI` repository.
 > workflow that's been used instead), and
 > [SECURITY_TESTING.md](./SECURITY_TESTING.md) (checklist of tools that
 > enforce a security boundary and whether that boundary has actually been
-> pen/escape-tested - **uncheck a tool there the moment its enforcement
-> logic changes**). For the full architecture deep-dive
-> (directory specs, lifecycle diagrams, compaction mechanics, file
+> pen/escape-tested via [docs/SWARM_TESTING.md](../docs/SWARM_TESTING.md)'s
+> swarm process - **reset a tool there to `?` and delete its report the
+> moment its enforcement logic changes**). For the full architecture
+> deep-dive (directory specs, lifecycle diagrams, compaction mechanics, file
 > schemas), see [docs/agents.md](../docs/agents.md) - this file is
 > orientation, that one is reference.
 
@@ -310,9 +311,11 @@ operation, not a side effect of inspection.
   prompt-injected one - could try to escape) need adversarial pen/escape
   testing against a live build, not just unit tests for the happy path -
   see [SECURITY_TESTING.md](./SECURITY_TESTING.md) for the tracked
-  checklist. **If you change such a tool's enforcement logic, uncheck it
-  there in the same commit** - a passing checkbox is a claim about the code
-  as it stood when last tested, not a permanent property of the tool.
+  checklist (`?`/`y`/`n`) and [docs/SWARM_TESTING.md](../docs/SWARM_TESTING.md)
+  for the actual swarm-based testing process. **If you change such a tool's
+  enforcement logic, reset it to `?` and delete its `docs/` report(s) in the
+  same commit** - a `y`/`n` state is a claim about the code as it stood when
+  last tested, not a permanent property of the tool.
 
 ## Important Gotchas
 
