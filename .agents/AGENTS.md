@@ -6,9 +6,13 @@ Agent guidelines for working in the `WackyPubAI` repository.
 > decisions and their rationale - read before changing session storage,
 > the OpenAI adapter, or reasoning handling: several behaviors there are
 > deliberate and load-bearing), [TODOS.md](./TODOS.md) (deferred work and
-> open gaps), and [LOCAL_TESTING.md](./LOCAL_TESTING.md) (how to actually
+> open gaps), [LOCAL_TESTING.md](./LOCAL_TESTING.md) (how to actually
 > run and verify changes - there's no mocked LLM backend, so this is the
-> workflow that's been used instead). For the full architecture deep-dive
+> workflow that's been used instead), and
+> [SECURITY_TESTING.md](./SECURITY_TESTING.md) (checklist of tools that
+> enforce a security boundary and whether that boundary has actually been
+> pen/escape-tested - **uncheck a tool there the moment its enforcement
+> logic changes**). For the full architecture deep-dive
 > (directory specs, lifecycle diagrams, compaction mechanics, file
 > schemas), see [docs/agents.md](../docs/agents.md) - this file is
 > orientation, that one is reference.
@@ -56,7 +60,8 @@ same implementation and documentation without duplicating either.
 ### Build & Test
 
 ```bash
-go build -o wackypub .
+go build -o bin/wackypub .
+go build -o bin/files-rw ./cmd/files-rw
 go test ./...
 go vet ./...
 ```
@@ -84,8 +89,8 @@ swapping backends, and the `httptest` technique for checking exact outgoing
 wire payloads without spending real API credits.
 
 ```bash
-go build -o wackypub .
-./wackypub --ws testws agent bob prompt "..."
+go build -o bin/wackypub .
+./bin/wackypub --ws testws agent bob prompt "..."
 ```
 
 ## Code Organization
@@ -144,6 +149,10 @@ type name all share the same root. Keep to this when adding a new subsystem -
 this command" a one-second lookup instead of a grep.
 
 ## Patterns & Conventions
+
+### Build binaries into `./bin`
+
+When building binaries locally for manual testing, verification, or symlinking (e.g. `wackypub`, `files-rw`), always output them to `./bin` (e.g. `go build -o bin/wackypub .` or `go build -o bin/files-rw ./cmd/files-rw`). `./bin` is gitignored so built binaries won't clutter `git status` or accidentally get committed, and provides a single predictable location for symlinks and executable targets.
 
 ### Concurrency should always be heavily considered
 
@@ -296,6 +305,14 @@ operation, not a side effect of inspection.
   `runtime.json` files), `test_agents/` is committed (keep it free of
   secrets) and is a complete, working example workspace (`AGENTS.md`,
   `IDENTITY.md`, `runtime.json`, `session.jsonl`), not just a fixture.
+- Tools that enforce a security boundary (filesystem access, command
+  execution, cross-agent authorization, anything an agent - or a
+  prompt-injected one - could try to escape) need adversarial pen/escape
+  testing against a live build, not just unit tests for the happy path -
+  see [SECURITY_TESTING.md](./SECURITY_TESTING.md) for the tracked
+  checklist. **If you change such a tool's enforcement logic, uncheck it
+  there in the same commit** - a passing checkbox is a claim about the code
+  as it stood when last tested, not a permanent property of the tool.
 
 ## Important Gotchas
 

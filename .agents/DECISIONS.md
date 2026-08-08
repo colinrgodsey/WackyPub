@@ -500,3 +500,30 @@ Agent runtime configurations (`runtime.json`) support explicit model provider se
 - `thinkingMode`: Sets thinking mode (`"enabled"`, `"adaptive"`, or empty for auto-detection).
 
 **Why**: Explicit provider selection removes provider ambiguity and gives every LLM backend (OpenAI-compatible gateways, native Gemini ADK models, and native Anthropic Claude models) first-class runtime config support with dedicated thinking/reasoning controls.
+
+## D22: `files-rw` - standalone read/write/edit/patch/list tool gated by a per-directory access file
+
+A companion binary, `files-rw` (`cmd/files-rw/main.go` + `pkg/filesrw/`, same module as `wackypub` - not a separate repo, so it can reuse conventions like the comment/blank-line rule parsing already established for `WACKYPUB_ALLOWED_AGENTS` rather than duplicating it), gives agents an explicit, per-directory-scoped read/write/edit/patch/list tool suite instead of relying solely on the invoking harness's own sandboxing. It's registered like any other agent tool: symlinked into `<agent_dir>/tools/`, invoked via the generic `run_command` tool with a real argv (never shell-parsed) and `cmd.Dir` set to the agent's own directory (see D14, `pkg/agent/agent_folder.go`) - which is why the access grant below can safely be scoped to "the tool's cwd" with no upward search.
+
+**Access grant (`FILES_RW_ACCESS`)**:
+- Exact filename, read only from the tool's cwd, never searched upward - since `cmd.Dir` is always the agent's own directory, this is always that agent's own grant, never inherited from a parent.
+- Missing file -> deny everything. No default-allow, no partial trust.
+- One rule per line: `w: <path>` or `r: <path>`. `w` implies `r`. Blank lines and `#`-prefixed lines are ignored (mirrors `WACKYPUB_ALLOWED_AGENTS`, D16).
+- Re-read fresh on every invocation - no caching, no state carried between runs.
+- The access file's own canonical path is always denied, unconditionally, even to a rule that would otherwise cover it (e.g. a broad `r: .`).
+
+**Path handling**:
+- `~` is rejected outright (fail loud) wherever it can appear - in a rule's path or a request target. Argv-based invocation means the shell never expands `~` for the tool; a literal `~` reaching it is almost certainly the model assuming shell semantics that aren't happening, not a case worth silently guessing at (`$HOME`) - matches the project's established preference for loud failure over silent disambiguation (see D-note on the Gemini thinking-config conflict fix).
+- Relative paths, in both rules and request targets, resolve against the tool's cwd.
+- Every path - granted root and request target alike - is canonicalized via `filepath.EvalSymlinks` before any containment check, so a symlink inside a granted root that points outside it can't be used to escape it. A granted root must already exist (fails loudly at load time otherwise); a request target may not (`write` creates new files) - in that case the longest existing ancestor is resolved through symlinks and the not-yet-existing tail is trusted as given relative to that resolved ancestor.
+- Containment is a path-separator-aware boundary check (`path == root || strings.HasPrefix(path, root+sep)`), not a naive string prefix - avoids a false-positive match of a granted `/home/bob/Downloads` against a request for `/home/bob/Downloads-secret`.
+
+**Command surface**:
+- `read <path> [--start N] [--end N]`: `cat -n`-style numbered output, whole file by default. No built-in pagination - relies on the existing `run_command`-to-scratchpad redirect (D18) for output too large for one tool response, same as any other tool.
+- `write <path>`: content via stdin only (plays cleanly with D18's `<SCRATCHPAD_DATA id="X" />` stdin macro for large content without spending model output tokens). Atomic (temp file + rename). Auto-creates missing parent directories, bounded inside the already-validated writable root.
+- `edit <path> --old <str> --new <str> [--replace-all]`: exact string replace, implemented directly rather than shelled to `patch` - rejects zero or more-than-one match unless `--replace-all` is given, so the caller supplies more surrounding context instead of an edit silently landing on the wrong occurrence.
+- `patch <path>`: unified diff via stdin, shelled to the system `patch` binary (`-o <tempfile>` then atomic rename over the target) - the actual "piggyback on `patch`" piece, for multi-hunk edits `edit` isn't suited for.
+- `list <path> [-l] [-a] [-R]`: shells to `ls`, but only ever with a fixed, hardcoded set of boolean flags translated ourselves - deliberately not raw argv passthrough, since that would let a second positional path argument slip past access control entirely (`ls` lists every path it's given; only the first would ever get checked).
+- `read`/`edit` refuse binary files (NUL-byte heuristic) - numbering/string-replace don't mean anything on non-text content.
+
+**Why**: Tool-level filesystem access in this project so far has been all-or-nothing (whatever `<agent_dir>/tools/` symlinks in, the executable gets whatever access the OS user running it has). `files-rw` adds an explicit, fail-loud, per-agent-directory allowlist on top, without requiring every future file-touching tool to reimplement its own sandboxing.
