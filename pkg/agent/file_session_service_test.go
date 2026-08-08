@@ -201,7 +201,7 @@ func TestMaxToolTurnsLimit(t *testing.T) {
 		t.Fatalf("LoadFolderAgent failed: %v", err)
 	}
 
-	fa.Model = &loopingToolModel{toolName: "set_scratchpad"}
+	fa.Model = &loopingToolModel{toolName: "create_scratchpad"}
 
 	toolsMap, _, err := BuildFolderAgentTools(agentDir)
 	if err != nil {

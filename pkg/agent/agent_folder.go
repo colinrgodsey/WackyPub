@@ -19,40 +19,45 @@ import (
 	"google.golang.org/genai"
 )
 
-type SetScratchpadArgs struct {
-	ID   int    `json:"id" jsonschema_description:"Integer ID of the scratchpad slot"`
-	Text string `json:"text" jsonschema_description:"Text content to store in the scratchpad slot"`
+type CreateScratchpadArgs struct {
+	Text string `json:"text" jsonschema_description:"Text content to store in a persistent scratchpad entry"`
 }
 
-type SetScratchpadResult struct {
-	Output string `json:"output"`
+type CreateScratchpadResult struct {
+	ID   string `json:"id"`
+	Seq  int64  `json:"seq"`
+	Size int    `json:"size"`
 }
 
 type GetScratchpadArgs struct {
-	ID int `json:"id" jsonschema_description:"Integer ID of the scratchpad slot to read"`
+	ID        string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to read"`
+	SkipLines *int   `json:"skip_lines,omitempty" jsonschema_description:"Optional number of lines to skip from the beginning"`
+	NumLines  *int   `json:"num_lines,omitempty" jsonschema_description:"Optional maximum number of lines to retrieve"`
 }
 
 type GetScratchpadResult struct {
 	Output string `json:"output"`
 }
 
-type ExecToolArgs struct {
-	Args               []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool"`
-	Env                map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation"`
-	StdinScratchpadID  *int              `json:"stdin_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to pipe as stdin into the command. The slot must have been set by set_scratchpad in an EARLIER turn, not this same one - tool calls within one turn may run concurrently, so a set_scratchpad call earlier in this same response is not guaranteed to have finished yet."`
-	StdoutScratchpadID *int              `json:"stdout_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to redirect stdout output into. Do not read this slot with get_scratchpad in the same turn - wait until your next turn, since the write may not have finished yet."`
+type ListScratchpadsArgs struct{}
+
+type ListScratchpadsResult struct {
+	Entries []ScratchpadItem `json:"entries"`
+	Count   int              `json:"count"`
+	Cap     int              `json:"cap"`
 }
 
-type ExecToolResult struct {
-	Output string `json:"output"`
+type ExecToolArgs struct {
+	Args  []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
+	Env   map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
+	Stdin string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 }
 
 type RunCommandArgs struct {
-	Command            string            `json:"command" jsonschema_description:"Name of the command executable to run from the discovered tools list"`
-	Args               []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool"`
-	Env                map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation"`
-	StdinScratchpadID  *int              `json:"stdin_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to pipe as stdin into the command. The slot must have been set by set_scratchpad in an EARLIER turn, not this same one - tool calls within one turn may run concurrently, so a set_scratchpad call earlier in this same response is not guaranteed to have finished yet."`
-	StdoutScratchpadID *int              `json:"stdout_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to redirect stdout output into. Do not read this slot with get_scratchpad in the same turn - wait until your next turn, since the write may not have finished yet."`
+	Command string            `json:"command" jsonschema_description:"Name of the command executable to run from the discovered tools list"`
+	Args    []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
+	Env     map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
+	Stdin   string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 }
 
 type RunCommandResult struct {
@@ -67,7 +72,7 @@ type LoadSkillResult struct {
 	Output string `json:"output"`
 }
 
-// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (set_scratchpad, get_scratchpad)
+// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads)
 // and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
 func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	toolMap := make(map[string]tool.Tool)
@@ -82,30 +87,34 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 		}
 	}
 
-	// 1. set_scratchpad
-	setTool, err := functiontool.New(functiontool.Config{
-		Name:        "set_scratchpad",
-		Description: "Save a text payload or intermediate command output into a persistent session scratchpad slot by integer ID. IMPORTANT: tool calls within the same turn may execute concurrently - do not set a slot and then reference it (via get_scratchpad or stdin_scratchpad_id) in that same turn. Set it now, use it on your next turn.",
-	}, func(ctx agent.Context, args SetScratchpadArgs) (SetScratchpadResult, error) {
-		out, err := SetScratchpad(agentDir, args.ID, args.Text)
+	// 1. create_scratchpad
+	createTool, err := functiontool.New(functiontool.Config{
+		Name:        "create_scratchpad",
+		Description: "Store a text payload in a persistent, session-level scratchpad entry. Returns a freshly generated 4-character ID.",
+	}, func(ctx agent.Context, args CreateScratchpadArgs) (CreateScratchpadResult, error) {
+		entry, err := CreateScratchpad(agentDir, args.Text, "create_scratchpad")
 		if err != nil {
-			return SetScratchpadResult{}, fmt.Errorf("failed to set scratchpad %d: %w", args.ID, err)
+			return CreateScratchpadResult{}, fmt.Errorf("failed to create scratchpad entry: %w", err)
 		}
-		return SetScratchpadResult{Output: out}, nil
+		return CreateScratchpadResult{
+			ID:   entry.ID,
+			Seq:  entry.Seq,
+			Size: entry.Size,
+		}, nil
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create set_scratchpad tool: %w", err)
+		return nil, nil, fmt.Errorf("failed to create create_scratchpad tool: %w", err)
 	}
-	addTool(setTool)
+	addTool(createTool)
 
 	// 2. get_scratchpad
 	getTool, err := functiontool.New(functiontool.Config{
 		Name:        "get_scratchpad",
-		Description: "Retrieve stored text from a persistent session scratchpad slot by integer ID. IMPORTANT: do not read a slot in the same turn as a set_scratchpad call or a stdout_scratchpad_id write targeting it - tool calls within one turn may execute concurrently, so the write is not guaranteed to have finished yet. Wait until your next turn.",
+		Description: "Retrieve stored text from a scratchpad entry by ID, optionally paginated by line range.",
 	}, func(ctx agent.Context, args GetScratchpadArgs) (GetScratchpadResult, error) {
-		out, err := GetScratchpad(agentDir, args.ID)
+		out, err := GetScratchpad(agentDir, args.ID, args.SkipLines, args.NumLines)
 		if err != nil {
-			return GetScratchpadResult{}, fmt.Errorf("failed to read scratchpad %d: %w", args.ID, err)
+			return GetScratchpadResult{}, err
 		}
 		return GetScratchpadResult{Output: out}, nil
 	})
@@ -113,6 +122,26 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 		return nil, nil, fmt.Errorf("failed to create get_scratchpad tool: %w", err)
 	}
 	addTool(getTool)
+
+	// 3. list_scratchpads
+	listTool, err := functiontool.New(functiontool.Config{
+		Name:        "list_scratchpads",
+		Description: "List metadata for all currently-live scratchpad entries (ID, seq, size, created_by, created_at) and current capacity usage.",
+	}, func(ctx agent.Context, args ListScratchpadsArgs) (ListScratchpadsResult, error) {
+		items, count, capVal, err := ListScratchpads(agentDir)
+		if err != nil {
+			return ListScratchpadsResult{}, fmt.Errorf("failed to list scratchpads: %w", err)
+		}
+		return ListScratchpadsResult{
+			Entries: items,
+			Count:   count,
+			Cap:     capVal,
+		}, nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create list_scratchpads tool: %w", err)
+	}
+	addTool(listTool)
 
 	// 3. Single generic run_command tool covering all discovered executables
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
@@ -147,10 +176,9 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 		}
 
 		execArgs := ExecToolArgs{
-			Args:               args.Args,
-			Env:                args.Env,
-			StdinScratchpadID:  args.StdinScratchpadID,
-			StdoutScratchpadID: args.StdoutScratchpadID,
+			Args:  args.Args,
+			Env:   args.Env,
+			Stdin: args.Stdin,
 		}
 		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs)
 		if err != nil {
@@ -211,7 +239,91 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	return toolMap, decls, nil
 }
 
-// FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) (string, error) {
+	cmdArgs := make([]string, len(args.Args))
+	for i, rawArg := range args.Args {
+		expanded, err := ExpandScratchpadMacros(agentDir, rawArg)
+		if err != nil {
+			return "", err
+		}
+		if len(expanded) > MaxExpandedArgBytes {
+			return "", fmt.Errorf("expanded argument exceeds 500000 bytes (was %d) - use stdin/stdout scratchpad redirection instead", len(expanded))
+		}
+		cmdArgs[i] = expanded
+	}
+
+	absToolPath, err := filepath.Abs(toolPath)
+	if err != nil {
+		absToolPath = toolPath
+	}
+
+	cmd := exec.CommandContext(ctx, absToolPath, cmdArgs...)
+	cmd.Dir = agentDir
+	cmd.Env = os.Environ()
+
+	if len(args.Env) > 0 {
+		for k, v := range args.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+
+	if args.Stdin != "" {
+		expandedStdin, err := ExpandScratchpadMacros(agentDir, args.Stdin)
+		if err != nil {
+			return "", err
+		}
+		cmd.Stdin = strings.NewReader(expandedStdin)
+	} else if len(args.Args) > 0 || len(args.Env) > 0 {
+		argsJSON, err := json.Marshal(args)
+		if err == nil {
+			cmd.Stdin = bytes.NewReader(argsJSON)
+			cmd.Env = append(cmd.Env, "WACKYPUB_TOOL_ARGS="+string(argsJSON))
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err = cmd.Run()
+	if err != nil {
+		errStr := stderr.String()
+		if errStr == "" {
+			errStr = err.Error()
+		}
+		return "", fmt.Errorf("tool %s failed: %s", toolName, errStr)
+	}
+
+	stdoutBytes := stdout.Bytes()
+	stderrBytes := stderr.Bytes()
+
+	var stdoutBlock string
+	if len(stdoutBytes) > ScratchpadOutputThreshold {
+		entry, err := CreateScratchpad(agentDir, string(stdoutBytes), "run_command")
+		if err != nil {
+			return "", fmt.Errorf("failed to create stdout scratchpad entry: %w", err)
+		}
+		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q /></STDOUT>", entry.ID)
+	} else if len(stdoutBytes) > 0 {
+		stdoutBlock = fmt.Sprintf("<STDOUT>%s</STDOUT>", string(stdoutBytes))
+	} else {
+		stdoutBlock = "<STDOUT></STDOUT>"
+	}
+
+	var stderrBlock string
+	if len(stderrBytes) > ScratchpadOutputThreshold {
+		entry, err := CreateScratchpad(agentDir, string(stderrBytes), "run_command")
+		if err != nil {
+			return "", fmt.Errorf("failed to create stderr scratchpad entry: %w", err)
+		}
+		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q /></STDERR>", entry.ID)
+	} else if len(stderrBytes) > 0 {
+		stderrBlock = fmt.Sprintf("<STDERR>%s</STDERR>", string(stderrBytes))
+	}
+
+	output := stdoutBlock + stderrBlock
+	return output, nil
+} // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
 type FolderAgent struct {
 	AgentID       string
 	AgentDir      string
@@ -337,71 +449,6 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	}
 
 	return finalResponse, nil
-}
-
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) (string, error) {
-	cmdArgs := args.Args
-
-	absToolPath, err := filepath.Abs(toolPath)
-	if err != nil {
-		absToolPath = toolPath
-	}
-
-	cmd := exec.CommandContext(ctx, absToolPath, cmdArgs...)
-	cmd.Dir = agentDir
-	cmd.Env = os.Environ()
-
-	if len(args.Env) > 0 {
-		for k, v := range args.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
-
-	if args.StdinScratchpadID != nil {
-		sp, err := ReadScratchpad(agentDir)
-		if err != nil {
-			return "", fmt.Errorf("failed to read scratchpad: %w", err)
-		}
-		stdinText, ok := sp[*args.StdinScratchpadID]
-		if !ok {
-			return "", fmt.Errorf("scratchpad %d has not been set - set_scratchpad must complete in an earlier turn before it can be used as stdin", *args.StdinScratchpadID)
-		}
-		cmd.Stdin = strings.NewReader(stdinText)
-	} else if len(args.Args) > 0 || len(args.Env) > 0 {
-		argsJSON, err := json.Marshal(args)
-		if err == nil {
-			cmd.Stdin = bytes.NewReader(argsJSON)
-			cmd.Env = append(cmd.Env, "WACKYPUB_TOOL_ARGS="+string(argsJSON))
-		}
-	}
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
-	if err != nil {
-		errStr := stderr.String()
-		if errStr == "" {
-			errStr = err.Error()
-		}
-		return "", fmt.Errorf("tool %s failed: %s", toolName, errStr)
-	}
-
-	out := stdout.String()
-	if args.StdoutScratchpadID != nil {
-		summary, err := SetScratchpad(agentDir, *args.StdoutScratchpadID, out)
-		if err != nil {
-			return "", fmt.Errorf("failed to write output to scratchpad %d: %w", *args.StdoutScratchpadID, err)
-		}
-		return summary, nil
-	}
-
-	out = strings.TrimSpace(out)
-	if out == "" {
-		out = "Command completed with no output."
-	}
-	return out, nil
 }
 
 // Helper to run ADK runner session for folder agent

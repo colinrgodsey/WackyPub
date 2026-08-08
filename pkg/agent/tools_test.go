@@ -70,15 +70,15 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain set_scratchpad, get_scratchpad, run_command, load_skill (4 tools)
-	if len(toolMap) != 4 {
-		t.Errorf("expected 4 tools, got %d", len(toolMap))
+	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, run_command, load_skill (5 tools)
+	if len(toolMap) != 5 {
+		t.Errorf("expected 5 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 4 {
-		t.Errorf("expected 4 decls, got %d", len(decls))
+	if len(decls) != 5 {
+		t.Errorf("expected 5 decls, got %d", len(decls))
 	}
-	if _, ok := toolMap["set_scratchpad"]; !ok {
-		t.Errorf("missing set_scratchpad in toolMap")
+	if _, ok := toolMap["create_scratchpad"]; !ok {
+		t.Errorf("missing create_scratchpad in toolMap")
 	}
 	if _, ok := toolMap["get_scratchpad"]; !ok {
 		t.Errorf("missing get_scratchpad in toolMap")
@@ -239,12 +239,12 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 4 tools in toolMap: set_scratchpad, get_scratchpad, run_command, load_skill
-	if len(toolMap) != 4 {
-		t.Fatalf("expected 4 tools in toolMap, got %d", len(toolMap))
+	// 5 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, run_command, load_skill
+	if len(toolMap) != 5 {
+		t.Fatalf("expected 5 tools in toolMap, got %d", len(toolMap))
 	}
-	if len(decls) != 4 {
-		t.Fatalf("expected 4 decls, got %d", len(decls))
+	if len(decls) != 5 {
+		t.Fatalf("expected 5 decls, got %d", len(decls))
 	}
 
 	runCmdTool, ok := toolMap["run_command"]
@@ -268,7 +268,7 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 	}
 	fa.Model = &runCmdTestModel{command: "echo.sh", args: []string{"world"}}
 
-	toolsList := []tool.Tool{toolMap["set_scratchpad"], toolMap["get_scratchpad"], runCmdTool}
+	toolsList := []tool.Tool{toolMap["create_scratchpad"], toolMap["get_scratchpad"], toolMap["list_scratchpads"], runCmdTool}
 	fa.ADKAgent, err = BuildADKAgent("bob", fa.SystemPrompt, 1, fa.Model, toolsList...)
 	if err != nil {
 		t.Fatalf("BuildADKAgent failed: %v", err)

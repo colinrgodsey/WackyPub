@@ -369,8 +369,8 @@ substitute for the other.
 `<agent_dir>/tools/` executables discovered per D14 are registered as LLM function declarations on each generation request.
 
 **Tool Schema Registration**:
-- Built-in tools (`set_scratchpad`, `get_scratchpad`) and a single generic `run_command` tool covering every discovered executable are constructed as Google ADK `tool.Tool` instances using `google.golang.org/adk/v2/tool/functiontool.New`.
-- Strongly typed Go structs (`SetScratchpadArgs`, `GetScratchpadArgs`, `RunCommandArgs`) automatically generate their `genai.FunctionDeclaration` schemas and handle JSON argument unmarshaling and type validation.
+- Built-in tools (`create_scratchpad`, `get_scratchpad`, `list_scratchpads` - see D18) and a single generic `run_command` tool covering every discovered executable are constructed as Google ADK `tool.Tool` instances using `google.golang.org/adk/v2/tool/functiontool.New`.
+- Strongly typed Go structs automatically generate their `genai.FunctionDeclaration` schemas and handle JSON argument unmarshaling and type validation.
 - Discovered executables under `tools/` are **not** individually registered as separate function declarations - they're dispatched through the one `run_command` tool's `command` argument. `run_command`'s description is built dynamically at agent-load time from the discovered command names, plus general usage guidance (see below), so an agent gets both "what commands exist" and "how command invocation works in general" from a single tool description instead of N near-duplicate `"Command <Name>"` descriptions with no shared context.
 - The command list embedded in the description is always alphabetically sorted (`DiscoverAgentToolsMap` already sorts before returning) - filesystem readdir order is not guaranteed stable across runs, and an unsorted list would change the description's bytes between generations for no reason, defeating prompt caching on every single request.
 
@@ -395,30 +395,39 @@ substitute for the other.
 
 **Tool Error Signaling**:
 - `executeTool` returns `(string, error)`, not just a formatted string. A non-zero exit, a missing binary, or a scratchpad read/write failure surfaces as a real Go `error`.
-- Every `functiontool.New` handler (`set_scratchpad`, `get_scratchpad`, and each discovered tool) propagates that error as its own return value instead of packing failure text into a normal-looking result and always returning `nil`.
+- Every `functiontool.New` handler (`create_scratchpad`, `get_scratchpad`, `list_scratchpads`, and `run_command`) propagates that error as its own return value instead of packing failure text into a normal-looking result and always returning `nil`.
 - Google ADK's own tool dispatch (`internal/llminternal/base_flow.go`) turns a non-nil handler error into a `FunctionResponse.Response` shaped as `{"error": "<message>"}`, structurally distinct from the `{"output": "..."}` shape a successful call produces - no extra callback wiring required on our side.
 
 **Why**: A uniform `{args: []string, env: map[string]string}` schema allows arbitrary CLI tool binaries under `tools/` to be invoked natively as subprocesses without requiring every tool to author custom schema metadata parser extensions, keeping discovery fast and compatible with any shell command. Error signaling matters because a model can only react differently to a tool failure if the failure looks different on the wire - previously, `"Error executing tool X: ..."` was just prose living in the same `output` field a successful call would use, so recognizing a failure depended entirely on the model reading it as English rather than on any structural signal. Collapsing per-discovered-tool declarations into one `run_command` mirrors how most modern coding agents actually work (a single shell/command-execution tool, not one declaration per binary) - it lets general operating guidance (working directory behavior, argv conventions, "check your scratchpad first," "use `--help` to explore") live in exactly one place instead of being absent or repeated per tool, at the cost of the model no longer seeing each command as its own named function in the schema.
 
-## D18: Persistent Scratchpad tools and command I/O redirection
+## D18: Scratchpad system - collision-safe IDs, bounded retention, and inline macro expansion for command I/O
 
-Agents can store large text payloads or intermediate command outputs in a persistent session-level scratchpad saved as `<agent_dir>/scratchpad.json`.
+Agents can store text payloads and intermediate command output in a persistent, session-level scratchpad (`<agent_dir>/scratchpad.json`) instead of paying to regenerate or re-read that data through the model on every turn it's needed.
 
-**Built-in Scratchpad Tools**:
-- `set_scratchpad(id: int, text: string)`: stores `text` under key `id` in `<agent_dir>/scratchpad.json`.
-- `get_scratchpad(id: int)`: retrieves the string stored under key `id`.
+**Why a scratchpad at all**: three distinct token-economics wins, not just "big output goes somewhere else." (1) An agent can pipe one agent's response directly into another tool call without ever entering those tokens into its own context. (2) One write can be reused across multiple downstream calls (send the same text to three peer agents) without re-entering it each time. (3) Even reading a scratchpad back is comparatively cheap - it's tokens the model consumes, not tokens it has to *generate*, and generation is the expensive side of that trade.
 
-**Command I/O Redirection Parameters**:
-Executable tool declarations in `<agent_dir>/tools/` include optional integer properties:
-- `stdin_scratchpad_id`: if set, `executeTool` reads `scratchpad[stdin_scratchpad_id]` and pipes it to the subprocess `Stdin`.
-- `stdout_scratchpad_id`: if set, `executeTool` writes the subprocess `Stdout` output into `scratchpad[stdout_scratchpad_id]` and returns a summary message (`"Scratchpad <id> updated (N bytes)"`) instead of placing large output directly into the conversation turn.
+**Tools**:
+- `create_scratchpad(text: string) -> id`: stores `text` under a freshly generated ID and returns it. Replaces the old `set_scratchpad(id, text)` - the caller never chooses an ID, which is what makes the concurrency race below structurally impossible rather than just discouraged.
+- `get_scratchpad(id: string, skip_lines?: int, num_lines?: int)`: retrieves the stored text, optionally paginated by line range.
+- `list_scratchpads() -> [{id, seq, size, created_by}]`: metadata-only forensic listing of every currently-live entry (plus live-count/cap), described below.
 
-**Why**: Passing large command outputs directly through session history inflates model context budgets and token costs. A persistent session-scoped scratchpad allows tools to pipe large payloads to one another or store outputs by integer ID without polluting prompt history.
+**ID shape and eviction**:
+- IDs are a randomly generated 4-character string from `[0-9a-z]` (~1.68M possible values), collision-checked against currently-*live* entries only - a since-evicted ID is fair game to reuse, since nothing is stored there anymore.
+- Each entry also stores a monotonically increasing `seq` integer (`max(existing seq) + 1` at creation), used purely for FIFO ordering - it's never shown as the entry's identity, only used internally to decide what to evict.
+- The scratchpad holds a bounded number of live entries (default 50). When a new entry would exceed that cap, the entry with the lowest `seq` is evicted - its data is actually deleted, not just marked stale.
+- Because eviction deletes rather than tombstones, a lookup miss on `get_scratchpad` is **structurally indistinguishable** between "this ID was evicted" and "this ID never existed" - there's no surviving record to tell the difference. `list_scratchpads` exists specifically to give a confused agent a way to check current reality directly, rather than trying (and failing) to explain history we no longer have.
 
-**Concurrent Same-Turn Race**:
-- Google ADK dispatches every `FunctionCall` in a single model response concurrently (its own `handleFunctionCalls` spawns one goroutine per call), with no ordering guarantee. A model that calls `set_scratchpad` and something consuming that slot (`get_scratchpad`, `stdin_scratchpad_id`) in the *same* turn can have the read execute before the write lands, silently piping the read side's placeholder text as if it were real content.
-- Mitigated two ways: the tool descriptions for `set_scratchpad`, `get_scratchpad`, and the `stdin_scratchpad_id`/`stdout_scratchpad_id` params explicitly tell the model not to combine a write and its matching read in one turn; and `executeTool`'s `stdin_scratchpad_id` path now returns a real error (not the `"Scratchpad N is empty"` placeholder) when the referenced slot doesn't exist yet, so a model that ignores the guidance gets a loud, retriable failure instead of silently corrupted input.
-- Neither fixes the race itself - both are behavioral nudges/safety nets, not a structural fix. See TODOS.md's auto-incrementing-scratchpad-ID entry for the actual structural fix under consideration.
+**Concurrent Same-Turn Race - now closed by construction**: Google ADK dispatches every `FunctionCall` in a single model response concurrently (`handleFunctionCalls` spawns one goroutine per call, no ordering guarantee), which previously meant a model calling `set_scratchpad` and something consuming that slot in the *same* turn could have the read execute before the write landed. Since `create_scratchpad` always returns a freshly generated ID in its response, a model cannot reference a slot before seeing the response that creates it - it has no way to know the ID in advance. The race isn't mitigated anymore, it's impossible to trigger.
+
+**`run_command` I/O integration** (see D17 for `run_command` itself):
+- `args[]` entries and a new `stdin` template string both support inline `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` macro expansion, resolved server-side against stored scratchpad content *before* the subprocess is built - never round-tripping the data through model-generated tokens. This replaces the old bare `stdin_scratchpad_id` integer field: `stdin` is now a template (which can be just the macro alone, or the macro embedded in a larger string with a prefix/suffix).
+- Any single argument, after macro expansion, that exceeds 500,000 bytes fails with an explicit internal error before `exec` is ever called (`"expanded argument exceeds 500000 bytes (was N) - use stdin/stdout scratchpad redirection instead"`) rather than surfacing a raw OS `E2BIG`.
+- `run_command` is the only tool that auto-creates scratchpad entries from its own output, since it's the only unbounded-output producer in the system (`create_scratchpad`/`get_scratchpad`/`list_scratchpads` all have naturally small, self-limiting output). Past a size threshold, stdout/stderr are each captured into a fresh scratchpad entry instead of being inlined; the response is tagged either way so the shape is uniform and self-documenting:
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT><STDERR><SCRATCHPAD_DATA id="k3p2" /></STDERR>` (both large)
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>` (only stdout was large; nothing on stderr)
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT><STDERR>low memory</STDERR>` (stdout large, stderr small enough to inline)
+  - `<STDOUT>operation complete</STDOUT>` (both small enough to inline directly)
+- `env` map values are explicitly **not** macro-expanded - env vars are expected to stay small, and adding a second expansion surface for something that doesn't need it isn't worth the complexity.
 
 ## D19: Folder agents migrate to Google ADK `runner.Runner` backed by `FileSessionService`
 

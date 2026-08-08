@@ -191,12 +191,12 @@ Step 1: Check logs.
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 4 tools: set_scratchpad, get_scratchpad, run_command, load_skill
-	if len(toolMap) != 4 {
-		t.Errorf("expected 4 tools, got %d", len(toolMap))
+	// 5 tools: create_scratchpad, get_scratchpad, list_scratchpads, run_command, load_skill
+	if len(toolMap) != 5 {
+		t.Errorf("expected 5 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 4 {
-		t.Errorf("expected 4 decls, got %d", len(decls))
+	if len(decls) != 5 {
+		t.Errorf("expected 5 decls, got %d", len(decls))
 	}
 
 	loadSkillTool, ok := toolMap["load_skill"]
@@ -219,7 +219,7 @@ Step 1: Check logs.
 	}
 	fa.Model = &loadSkillTestModel{skillName: "debugging"}
 
-	toolsList := []tool.Tool{toolMap["set_scratchpad"], toolMap["get_scratchpad"], toolMap["run_command"], loadSkillTool}
+	toolsList := []tool.Tool{toolMap["create_scratchpad"], toolMap["get_scratchpad"], toolMap["list_scratchpads"], toolMap["run_command"], loadSkillTool}
 	fa.ADKAgent, err = BuildADKAgent("bob", fa.SystemPrompt, 1, fa.Model, toolsList...)
 	if err != nil {
 		t.Fatalf("BuildADKAgent failed: %v", err)

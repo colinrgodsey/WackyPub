@@ -183,22 +183,23 @@ You are Ignis, an ancient wizard.
 - `run_command`'s description is constructed dynamically at agent-load time, embedding an alphabetically sorted list of available commands and general execution guidance (working directory, argv conventions, scratchpad usage, and `--help` exploration).
 - `run_command` accepts:
   - `command`: Name of the command executable to run from `tools/`.
-  - `args`: Array of positional CLI command arguments.
-  - `env`: Key-value map of environment variables.
-  - `stdin_scratchpad_id`: Optional scratchpad slot ID to pipe as stdin.
-  - `stdout_scratchpad_id`: Optional scratchpad slot ID to redirect stdout output into.
+  - `args`: Array of positional CLI command arguments (supports inline `<SCRATCHPAD_DATA id="X" />` macro expansion).
+  - `env`: Key-value map of environment variables (not macro-expanded).
+  - `stdin`: Optional stdin template string (supports inline `<SCRATCHPAD_DATA id="X" />` macro expansion).
 - Executed in a multi-turn tool loop within `GenerateTurn` up to `--max-tool-turns` (default `10`).
 
 ---
 
 ### `scratchpad.json`
 
-`scratchpad.json` is a persistent JSON file (`<agent_id>/scratchpad.json`) mapping integer slot IDs to string payloads (see DECISIONS.md D18).
+`scratchpad.json` is a persistent JSON file (`<agent_id>/scratchpad.json`) storing live scratchpad entries with collision-safe 4-character IDs and FIFO eviction (see DECISIONS.md D18).
 
-#### Built-in Tools & I/O Redirection:
-- **`set_scratchpad(id: int, text: string)`**: Stores `text` under slot `id`.
-- **`get_scratchpad(id: int)`**: Retrieves stored text from slot `id`.
-- **Command Redirection**: Commands using `stdout_scratchpad_id` store large outputs directly in `scratchpad.json` and return a short summary turn (`"Scratchpad <id> updated (N bytes)"`), preserving LLM context budget.
+#### Built-in Tools & I/O Integration:
+- **`create_scratchpad(text: string)`**: Stores `text` under a freshly generated 4-character ID (`[0-9a-z]`), returning `{id, seq, size}`. Automatically evicts the entry with the lowest `seq` when live entries exceed cap (50).
+- **`get_scratchpad(id: string, skip_lines?: int, num_lines?: int)`**: Retrieves stored text by ID, optionally paginated by line range.
+- **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (ID, seq, size, created_by, created_at) and capacity usage.
+- **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` server-side before process execution. Arguments exceeding 500,000 bytes after expansion fail fast.
+- **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>`.
 
 ---
 

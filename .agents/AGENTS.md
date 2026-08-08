@@ -145,6 +145,12 @@ this command" a one-second lookup instead of a grep.
 
 ## Patterns & Conventions
 
+### Concurrency should always be heavily considered
+
+Any shared state, file access, session mutation, tool invocation, or ID generation must be evaluated for concurrent execution. Google ADK dispatches multiple tool calls in a single model response concurrently in separate goroutines (`handleFunctionCalls`), and external processes or multi-agent calls can access workspace files concurrently.
+
+**Why**: Unprotected file read-modify-write loops, shared map mutations without mutex locks, non-atomic file persistence, or assumptions about sequential tool execution introduce subtle race conditions, corrupted state, or lost updates under concurrent access. Always design state mutations and file access to be concurrency-safe.
+
 ### No magic strings - a string literal used more than once becomes a named constant
 
 If a string literal appears more than once - a filename (`"runtime.json"`,
