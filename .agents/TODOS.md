@@ -4,6 +4,28 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
+## Consider a timeout on session lock acquisition
+
+`AcquireSessionLock` (`pkg/agent/lock.go`) blocks forever on `syscall.Flock`
+with no timeout. The read-only SDK methods that used to call it
+unnecessarily were fixed to not lock at all (see the self-deadlock fix
+found live via clerk), but the genuinely mutating methods (`AddUserTurn`,
+`GenerateTurn`, `AddAndGenerateTurn`, `StripReasoningDetails`,
+`CompactSession`) still correctly need to hold it, and still block
+indefinitely if something else is holding it - a real deadlock we haven't
+found yet, or just a second legitimate caller genuinely waiting its turn.
+
+A bounded wait (fail with a clear "timed out waiting for session lock -
+another process appears to be using this agent" error instead of hanging)
+would be a reasonable safety net. The real constraint: this session
+directly observed legitimate `GenerateTurn` calls taking several minutes
+(high reasoning effort + several chained tool turns), so the timeout needs
+to be generous enough not to false-positive-fail a slow-but-working
+generation - probably needs to be configurable rather than a small fixed
+constant. `syscall.Flock` has no native blocking-with-timeout mode, so
+this would mean polling `LOCK_NB` in a loop until success or timeout
+elapses.
+
 ## Modular compaction strategy
 
 `CheckAndCompactSession`/`CompactionDirectivePrompt` (`pkg/agent/compaction.go`)

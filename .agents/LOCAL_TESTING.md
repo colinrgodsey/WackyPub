@@ -145,6 +145,134 @@ during testing (a manual edit dropped the trailing newline, the next
 `prompt` call appended onto the same line, and `ReadSessionTurns` silently
 skipped the merged line on the next read).
 
+## Tracing a multi-turn tool-calling exchange
+
+`read-session`'s raw JSON is hard to scan once a turn involves several
+`FunctionCall`/`FunctionResponse` round trips (tool loops, cross-agent
+`wackypub` calls, scratchpad piping). This prints just the shape that
+matters - role, tool name + args, response, and text (thoughts labeled
+separately) - starting from wherever a specific turn's text appears, so
+you don't have to scroll past the whole history:
+
+```bash
+python3 -c "
+import json
+with open('testws/clerk/session.jsonl') as f:
+    lines = f.readlines()
+target = 'text to find the start of the turn you care about'
+start = 0
+for i, line in enumerate(lines):
+    obj = json.loads(line)
+    for p in obj.get('parts', []):
+        if 'text' in p and target in p['text']:
+            start = i
+for i in range(start, len(lines)):
+    obj = json.loads(lines[i])
+    for p in obj.get('parts', []):
+        if 'functionCall' in p:
+            print(f'[{i}] CALL: {p[\"functionCall\"]}')
+        elif 'functionResponse' in p:
+            print(f'[{i}] RESPONSE: {json.dumps(p[\"functionResponse\"].get(\"response\",{}))[:300]}')
+        elif 'text' in p:
+            tag = 'THOUGHT' if p.get('thought') else 'TEXT'
+            print(f'[{i}] {tag}: {p[\"text\"][:200]!r}')
+"
+```
+
+This is how the scratchpad-piping trials were verified as actually working
+(not just producing a plausible-looking final answer) - e.g. confirming a
+`run_command` call's `stdin` was a `<SCRATCHPAD_DATA id="..." />` macro
+referencing an earlier tool's output, rather than the model having quietly
+re-read and repasted the content itself.
+
+## Test from inside the agent's own directory, not the repo root
+
+Several checks are CWD-based, not just workspace-based: `WACKYPUB_ROOT`
+walk-up (D15) and `WACKYPUB_ALLOWED_AGENTS` resolution (D16) both start
+from the current working directory, not from `--ws`. Running a command
+from the repo root (or anywhere outside the agent's own folder) silently
+skips these checks entirely, which looks like success but isn't testing
+what an agent's own `run_command wackypub ...` subprocess actually
+experiences (`cmd.Dir` is set to the agent's own directory - see D17).
+
+```bash
+# WRONG for testing CWD-dependent behavior - runs unrestricted, since the
+# repo root isn't inside any agent's directory:
+./wackypub --ws testws workspace clerk
+
+# RIGHT - reproduces exactly what clerk's own subprocess calls see:
+cd testws/clerk && /path/to/wackypub workspace
+```
+
+This exact mistake produced a false "the fix works" result once during
+testing - rerunning from inside the agent's own directory caught it.
+
+## Reproducing lock contention and deadlocks
+
+`AcquireSessionLock` writes the holding process's PID directly into
+`<agent_dir>/session.lock` - if something seems stuck, `cat` the lock file
+and cross-reference with `ps aux` before assuming it's just slow:
+
+```bash
+cat testws/clerk/session.lock   # holding PID
+ps aux | grep -i wackypub       # what's that PID (and its children) doing
+```
+
+To deliberately simulate a held session lock (e.g. to verify a command
+that's supposed to be lock-free actually doesn't block, or to reproduce a
+suspected deadlock before fixing it), hold the flock in a background
+subshell and run the command under test against it with a short timeout:
+
+```bash
+(
+  exec 200>testws/clerk/session.lock
+  flock -x 200
+  sleep 12
+) &
+sleep 1   # let the background subshell actually acquire the lock first
+timeout 5 ./wackypub --ws testws workspace clerk 2>&1
+echo "exit: $?"   # 124 means it hung and timeout killed it
+wait
+```
+
+This is exactly how the self-deadlock in `InspectAgent` (an agent's own
+`run_command wackypub workspace` call, which inspects every agent
+including itself, blocking on a lock its own live `GenerateTurn` already
+held) was confirmed live before the fix, and re-confirmed fixed afterward
+by rerunning the identical repro.
+
+## Reproducing race conditions with a scratch test
+
+For a suspected concurrency bug (not just "this looks unsafe" but "I want
+to see it actually corrupt something"), a throwaway `_test.go` with a
+`sync.WaitGroup` spawning several goroutines against the function under
+test, run with `-race`, proves it either way:
+
+```go
+func TestScratchConcurrentCreates(t *testing.T) {
+	agentDir := t.TempDir()
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := agent.CreateScratchpad(agentDir, fmt.Sprintf("payload-%d", i), "test"); err != nil {
+				t.Errorf("create %d failed: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+```
+
+Run with `go test -run TestScratchConcurrentCreates -race -count=1`.
+Prefix the filename with `zz` (e.g. `zzscratch_test.go`) so it sorts last
+and is obviously a scratch file, and delete it once you're done - same
+throwaway-not-committed convention as the `httptest` scratch programs
+below. Keep the exact reproduction script around (don't just fix and move
+on) so you can rerun it unmodified after the fix - that's what actually
+confirms the fix, not just "the new unit test passes."
+
 ## Verifying the outgoing wire payload without spending real API credits
 
 `pkg/agent/openai_model_test.go` already covers this for the wiring that
@@ -231,3 +359,24 @@ against a real backend:
   which is fine to resume from, or it may need a turn trimmed first if the
   failure was caused by something now baked into history (like a stale
   encrypted reasoning block - see `strip-reasoning`).
+- A high-reasoning-effort model (e.g. `extraBody.reasoning.effort: "high"`)
+  chaining several tool calls in one turn can genuinely take multiple
+  minutes for a single `prompt`/`generate` call - this is normal, not a
+  hang. Give live trials a generous timeout (`timeout 590 ...` or run in
+  the background) rather than assuming a fast response; a command that
+  gets killed by an aggressive timeout looks identical to a real hang
+  unless you check what actually got persisted to `session.jsonl` first
+  (partial tool-call rounds are appended progressively, not all at once
+  at the end - see "Tracing a multi-turn tool-calling exchange" above).
+
+## A stale-looking diagnostic isn't always real
+
+If an inline diagnostic/LSP tool reports an error (`undefined: X`, wrong
+argument count) right after an edit that should have fixed exactly that,
+but a fresh `go build ./...` / `go vet ./...` / `go test ./...` in the
+terminal passes clean - trust the terminal. This happened repeatedly
+during this project's development: the diagnostic view lagged behind the
+actual file state after a same-file edit, reporting symbols as undefined
+that a real build resolved without issue. Don't chase a phantom error by
+re-editing already-correct code; re-run the actual build/test command
+first.
