@@ -15,6 +15,9 @@ This document details the architecture, directory specs, lifecycle, compaction m
    - [AGENTS.md & Macro Expansion](#agentsmd--macro-expansion)
    - [MEMORY.md](#memorymd)
    - [session.jsonl](#sessionjsonl)
+   - [WACKYPUB_ALLOWED_AGENTS](#wackypub_allowed_agents)
+   - [tools/ Directory](#tools-directory)
+   - [scratchpad.json](#scratchpadjson)
 4. [Google ADK Integration Layer](#4-google-adk-integration-layer)
 5. [Execution Lifecycle](#5-execution-lifecycle)
 6. [Session Compaction Mechanics](#6-session-compaction-mechanics)
@@ -31,22 +34,29 @@ WackyPubAI manages agents using a file-system-first architecture. Each agent ope
 
 ```
 <ws_dir>/
+├── WACKYPUB_ROOT          # Empty marker file designating workspace root
 └── <agent_id>/
     ├── runtime.json       # LLM Endpoint, Model & Compaction Settings (or Symlink)
     ├── AGENTS.md          # System Prompt with @<FILE_PATH> Macro Inclusions
     ├── MEMORY.md          # Long-term Compacted Memories
     ├── session.jsonl      # Sequential Turn History Log (JSON Lines)
-    └── session.lock       # PID-based Exclusive Process Lock
+    ├── session.lock       # PID-based Exclusive Process Lock
+    ├── WACKYPUB_ALLOWED_AGENTS # Opt-in allowlist of target agents for cross-agent calls
+    ├── scratchpad.json    # Persistent session scratchpad slots for large I/O
+    └── tools/             # Discovered executable tool binaries / scripts
 ```
 
-By decoupling runtime configuration, system prompts, memory, and turn logs into discrete files, agent state is human-readable, source-controllable, and easily inspectable.
+By decoupling runtime configuration, system prompts, memory, turn logs, tools, and cross-agent authorization into discrete files, agent state is human-readable, source-controllable, and easily inspectable.
 
 ---
 
 ## 2. Workspace & Directory Structure
 
-- **Workspace Directory (`<ws_dir>`)**: Defaults to the current working directory (`.`). Can be overridden globally via the `--ws <path>` CLI flag.
-- **Agent Directory (`<ws_dir>/<agent_id>/`)**: Contains all runtime configuration, prompt templates, memory, and turn data for `<agent_id>`.
+- **Workspace Root Marker (`WACKYPUB_ROOT`)**: Every valid workspace directory must contain an empty `WACKYPUB_ROOT` marker file directly at its root.
+- **Workspace Discovery**:
+  - **Unspecified `--ws`**: Walks up directory ancestors from the current working directory (`CWD`) to find the nearest directory containing `WACKYPUB_ROOT`. Errors if no marker file is found.
+  - **Explicit `--ws <path>`**: Validates that `<path>` directly contains `WACKYPUB_ROOT`.
+- **Agent Directory (`<ws_dir>/<agent_id>/`)**: Contains all runtime configuration, prompt templates, memory, session history, allowlists, scratchpads, and tools for `<agent_id>`.
 
 ---
 
@@ -148,6 +158,43 @@ You are Ignis, an ancient wizard.
 - The system prompt is **never stored** inside `session.jsonl` — it's re-rendered from `AGENTS.md` and injected fresh into the first turn on every generation (see [MEMORY.md](#memorymd) above).
 - A `Part` with `"thought": true` holds reasoning/chain-of-thought text captured from the model, kept separate from the final-answer part(s). See [§7](#7-reasoning--thinking-support).
 - A part can also carry a `partMetadata` object holding an opaque, provider-specific block (e.g. OpenRouter's `reasoning_details`, including encrypted/signed reasoning) — see [§7](#7-reasoning--thinking-support).
+
+---
+
+### `WACKYPUB_ALLOWED_AGENTS`
+
+`WACKYPUB_ALLOWED_AGENTS` is an opt-in plain-text allowlist file in an agent's directory (`<agent_id>/WACKYPUB_ALLOWED_AGENTS`) listing target agent IDs that the current agent is authorized to invoke via cross-agent calls (e.g. messaging tools).
+
+#### Key Rules:
+- Each non-empty line (ignoring `#` comments) specifies one allowed target agent ID.
+- **Default Deny-All**: If `WACKYPUB_ALLOWED_AGENTS` is absent from an agent's directory, all cross-agent target invocations from that agent directory are denied.
+- **Deadlock Safety (`WACKYPUB_CALL_CHAIN`)**: In addition to authorization, cross-agent calls propagate `WACKYPUB_CALL_CHAIN` (comma-separated active agent IDs) across subprocess environments. Re-targeting an agent already in the chain is rejected immediately to prevent deadlock cycles.
+
+---
+
+### `tools/` Directory
+
+`<agent_id>/tools/` contains executable binaries or scripts discovered and registered as tools during generation turns (see DECISIONS.md D14, D17).
+
+#### Discovery & Invocation:
+- Recursively walked for executable files (`mode & 0111 != 0`).
+- Discovered tool basenames are registered as function declarations (`genai.FunctionDeclaration`) accepting:
+  - `args`: Array of positional CLI command arguments.
+  - `env`: Key-value map of environment variables.
+  - `stdin_scratchpad_id`: Optional scratchpad slot ID to pipe as stdin.
+  - `stdout_scratchpad_id`: Optional scratchpad slot ID to redirect stdout output into.
+- Executed in a multi-turn tool loop within `GenerateTurn` up to `--max-tool-turns` (default `10`).
+
+---
+
+### `scratchpad.json`
+
+`scratchpad.json` is a persistent JSON file (`<agent_id>/scratchpad.json`) mapping integer slot IDs to string payloads (see DECISIONS.md D18).
+
+#### Built-in Tools & I/O Redirection:
+- **`set_scratchpad(id: int, text: string)`**: Stores `text` under slot `id`.
+- **`get_scratchpad(id: int)`**: Retrieves stored text from slot `id`.
+- **Command Redirection**: Commands using `stdout_scratchpad_id` store large outputs directly in `scratchpad.json` and return a short summary turn (`"Scratchpad <id> updated (N bytes)"`), preserving LLM context budget.
 
 ---
 
@@ -311,6 +358,10 @@ If an agent's `session.jsonl` already contains `reasoning_details` block metadat
 
 ## 8. CLI Command Pipeline
 
+### Global Flags
+- `--ws <path>`: Specifies workspace directory. Unspecified walks up from CWD looking for `WACKYPUB_ROOT`.
+- `--max-tool-turns <int>`: Sets maximum consecutive tool-call turn limit per generation (default `10`).
+
 ### Add User Turn (`add`)
 ```bash
 wackypub agent <agent_id> add [message]
@@ -324,17 +375,19 @@ wackypub agent <agent_id> generate
 ```
 - Loads agent from `<ws_dir>/<agent_id>`.
 - Evaluates compaction triggers.
-- Builds the request contents (system prompt + memory turn, then `session.jsonl` history) and passes them through `MergeConsecutiveUserTurns` — collapsing any run of consecutive `user` turns (e.g. from multiple prior `add` calls) into one multi-part message before it's sent, since many backends reject or mishandle non-alternating roles. `session.jsonl` itself is untouched by this — it's a request-time normalization, not a storage-time one.
-- Generates a turn by calling the configured `model.LLM` directly (see [§4](#4-google-adk-integration-layer)).
+- Discovers executable tools in `<ws_dir>/<agent_id>/tools/` and registers them alongside built-in `set_scratchpad`/`get_scratchpad` tools.
+- Executes multi-turn tool calling loop up to `--max-tool-turns` (default 10).
+- Builds request contents and passes them through `MergeConsecutiveUserTurns`.
+- Generates turn by calling the configured `model.LLM` directly.
 - Prints final-answer text to `stdout` (`Thought` parts excluded).
-- Appends the full generated `genai.Content` — including any `Thought` part — to `<ws_dir>/<agent_id>/session.jsonl`.
+- Appends generated turns (`genai.Content`) to `<ws_dir>/<agent_id>/session.jsonl`.
 
 ### Atomic Prompt Turn (`prompt`)
 ```bash
 wackypub agent <agent_id> prompt [message]
 ```
-- **Atomically** appends the user message and generates the assistant response under a **single session lock**.
-- Prevents race conditions when multiple processes target the same agent (e.g. consecutive user turns without an assistant response between them) — and even if consecutive user turns do end up in `session.jsonl` (via `add`, or just because the persistent-memory turn precedes the first real user turn), `generate`'s merge step (above) still normalizes them before the request goes out.
+- **Atomically** appends the user message and executes the generation turn loop under a **single session lock**.
+- Prevents race conditions when multiple processes target the same agent.
 - Accepts message via positional argument, `-m / --message` flag, or piped stdin.
 - Prints generated assistant text to `stdout`.
 - **Recommended over separate `add` + `generate`** for most use cases.
@@ -343,49 +396,43 @@ wackypub agent <agent_id> prompt [message]
 ```bash
 wackypub agent <agent_id> strip-reasoning
 ```
-- Permanently removes OpenRouter `reasoning_details` block metadata (including encrypted/signed reasoning tied to a specific backend endpoint) from every turn in `<ws_dir>/<agent_id>/session.jsonl`, rewriting the file in place under the session lock.
-- Readable plain-text `Thought` reasoning is left untouched — only the opaque `partMetadata` block is removed.
-- Prints the number of turns modified.
-- Use this when permanently switching an agent to a different model/endpoint after it accumulated encrypted reasoning blocks from the old one — see [§7](#7-reasoning--thinking-support).
+- Permanently removes OpenRouter `reasoning_details` block metadata from every turn in `<ws_dir>/<agent_id>/session.jsonl`, rewriting the file in place under the session lock.
+- Readable plain-text `Thought` reasoning is left untouched.
 
 ### Read Session (`read-session`)
 ```bash
 wackypub agent <agent_id> read-session
 ```
-- Prints every turn in `<ws_dir>/<agent_id>/session.jsonl` to stdout, one JSON-encoded `genai.Content` per line (same shape as the file itself).
+- Prints every turn in `<ws_dir>/<agent_id>/session.jsonl` to stdout, one JSON-encoded `genai.Content` per line.
 - Read-only.
 
 ### Read Memory (`read-memory`)
 ```bash
 wackypub agent <agent_id> read-memory
 ```
-- Prints the current contents of `<ws_dir>/<agent_id>/MEMORY.md` to stdout. Empty output (no error) if the file doesn't exist yet.
+- Prints current contents of `<ws_dir>/<agent_id>/MEMORY.md` to stdout.
 - Read-only.
 
 ### Render System Prompt (`render-prompt`)
 ```bash
 wackypub agent <agent_id> render-prompt
 ```
-- Prints the fully rendered system prompt — `AGENTS.md` (or the generic fallback if missing) after `@<FILE_PATH>` macro expansion — exactly the text that becomes part of the first turn on every generation (see [MEMORY.md](#memorymd)).
-- Does **not** construct a model and does not require `runtime.json` to exist or be valid — works for validating `AGENTS.md`/macro output even before the agent's backend is configured.
+- Prints fully rendered system prompt (`AGENTS.md` after `@<FILE_PATH>` macro expansion).
 - Read-only.
 
 ### Compact (`compact`)
 ```bash
 wackypub agent <agent_id> compact
 ```
-- Manually runs the same compaction check `generate`/`prompt` run automatically (see [§6](#6-session-compaction-mechanics)). No-op, not an error, if the session is under `contextWindow` or `contextWindow` is unset.
-- Prints whether compaction actually ran.
+- Manually evaluates and performs session compaction if token threshold is met.
 
 ### Workspace Diagnostics (`workspace`)
 ```bash
 wackypub workspace
 wackypub workspace <agent_id>
 ```
-This is a top-level command (`wackypub workspace ...`, not `wackypub agent ... workspace`) — see [§4](#4-google-adk-integration-layer) and `.agents/AGENTS.md` for why: it's meant as a self-service way for an agent platform to discover how to structure a workspace, rather than a prose doc that can drift from what the code actually does.
-- No argument: lists every agent directory found directly under `--ws` (a directory counts as an agent directory if it directly contains at least one of `AGENTS.md`, `runtime.json`, or `session.jsonl` — a directory like `testws/runtimes/` used only to hold shared `runtime.json` variants to symlink from is correctly excluded), with a one-line status per agent: `runtime.json` present/valid, `session.jsonl` turn count (and corrupt-line count if nonzero), whether `MEMORY.md` exists.
-- With `agent_id`: detailed on-disk state for that one agent — every expected file's presence, `runtime.json`'s resolved path if it's a symlink and whether it parses, session turn count, and an explicit "Issues" list for anything broken (missing/invalid `runtime.json`, a broken symlink, corrupt `session.jsonl` lines). Works even if the agent directory doesn't exist yet — in that case it explains what to create instead of erroring.
-- **Read-only**: never creates or modifies a file, including not creating the agent directory just from being asked about a nonexistent one (unlike most other `AgentSDK` methods, which call `os.MkdirAll` on the agent directory as a side effect).
+- Top-level diagnostic command inspecting workspace agents, presence of expected files (`WACKYPUB_ROOT`, `AGENTS.md`, `runtime.json`, `session.jsonl`, `MEMORY.md`, `WACKYPUB_ALLOWED_AGENTS`, `tools/`), discovered tools, shadowed tools, and issue warnings.
+- Read-only: never creates or modifies any file.
 
 ---
 
@@ -399,11 +446,6 @@ All SDK operations acquire an exclusive POSIX file lock (`flock`) on `<agent_id>
 - **PID visibility**: The current process PID is written to the lock file for diagnostic inspection.
 - **Scope**: The lock is held for the duration of the SDK method call and released automatically via `defer`.
 
-### Why It Matters
-Without locking, concurrent CLI invocations (e.g. two terminals running `add` and `generate` against the same agent) can interleave writes to `session.jsonl`, producing consecutive same-role turns or corrupted state. The `prompt` command avoids this entirely by holding the lock across both the user append and assistant generation.
-
-> ⚠️ **No defensive merging**: unlike the original hand-rolled adapter, the current OpenAI adapter (`achetronic/adk-utils-go` / the `colinrgodsey` fork) does **not** merge consecutive same-role turns before sending them — each `genai.Content` in `session.jsonl` maps to its own message on the wire. Under normal use (`add`/`generate`/`prompt`) turns always alternate correctly, but hand-editing `session.jsonl` into a non-alternating state can produce malformed requests against backends with a strict chat template. `session.lock` prevents the concurrent-write case; it doesn't fix manually-broken data (also watch for missing trailing newlines when hand-editing — a stripped final newline plus a subsequent append will silently merge two JSON objects onto one line, which `ReadSessionTurns` then silently skips as unparseable).
-
 ---
 
 ## 10. Programmatic Go SDK API (`pkg/agent`)
@@ -416,6 +458,7 @@ import "github.com/colinrgodsey/WackyPubAI/pkg/agent"
 
 // Initialize SDK for workspace directory
 sdk := agent.NewSDK("./my_workspace")
+sdk.MaxToolTurns = 10 // Optional cap over consecutive tool turns
 ```
 
 ### SDK Methods
@@ -423,7 +466,7 @@ sdk := agent.NewSDK("./my_workspace")
 // Add a user message turn to session.jsonl (acquires session lock)
 err := sdk.AddUserTurn("wizard", "Greetings! Tell me a rumor.")
 
-// Generate the agent's turn response (acquires session lock, evaluates compaction & appends to session.jsonl)
+// Generate the agent's turn response (acquires session lock, evaluates compaction & runs tool execution loop)
 respText, err := sdk.GenerateTurn(ctx, "wizard")
 
 // Atomically add user message + generate assistant response under a single lock (recommended)
@@ -435,25 +478,26 @@ turns, err := sdk.ReadSession("wizard")
 // Read memory file (MEMORY.md) (acquires session lock)
 mem, err := sdk.ReadMemory("wizard")
 
-// Fully rendered system prompt (AGENTS.md + macro expansion) - no model constructed,
-// doesn't require runtime.json (acquires session lock)
+// Persistent session scratchpad management
+msg, err := agent.SetScratchpad(agentDir, 1, "hello")
+val, err := agent.GetScratchpad(agentDir, 1)
+
+// Fully rendered system prompt (AGENTS.md + macro expansion) (acquires session lock)
 prompt, err := sdk.RenderSystemPrompt("wizard")
 
 // Manually trigger session compaction evaluation (acquires session lock)
 compacted, err := sdk.CompactSession(ctx, "wizard")
 
-// Permanently strip OpenRouter reasoning_details block metadata from session.jsonl,
-// returning the number of turns modified (acquires session lock)
+// Permanently strip OpenRouter reasoning_details block metadata from session.jsonl (acquires session lock)
 modified, err := sdk.StripReasoningDetails("wizard")
 
-// List agent IDs found directly under the workspace directory (no lock — only reads directory names)
+// List agent IDs found directly under the workspace directory
 ids, err := sdk.ListAgents()
 
-// Report an agent's on-disk state (files present/missing, runtime.json validity, session/memory
-// stats) — read-only, never creates the agent directory; acquires session lock only if it exists
+// Report an agent's on-disk state (files present/missing, runtime.json validity, session/memory stats, tools)
 insp, err := sdk.InspectAgent("wizard")
 
-// Access underlying FolderAgent for ADK runner customization (no lock — caller manages locking)
+// Access underlying FolderAgent for ADK runner customization
 fa, err := sdk.GetAgent("wizard")
 ```
 

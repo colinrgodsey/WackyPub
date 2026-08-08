@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	adkAgent "github.com/colinrgodsey/WackyPubAI/pkg/agent"
 	"github.com/colinrgodsey/WackyPubAI/pkg/config"
 )
 
@@ -14,6 +15,7 @@ var (
 	workspaceDir string
 	modelName    string
 	apiKey       string
+	maxToolTurns int
 	cfg          *config.Config
 )
 
@@ -49,12 +51,15 @@ OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and aut
 	},
 }
 
-// GetWorkspaceDir returns the specified workspace directory or CWD as default.
-func GetWorkspaceDir() string {
-	if workspaceDir == "" {
-		return "."
-	}
-	return workspaceDir
+// GetWorkspaceDir returns the resolved workspace directory according to D15.
+func GetWorkspaceDir() (string, error) {
+	isExplicit := RootCmd.PersistentFlags().Changed("ws")
+	return adkAgent.ResolveWorkspaceDir(workspaceDir, isExplicit)
+}
+
+// GetMaxToolTurns returns the configured max tool turns limit.
+func GetMaxToolTurns() int {
+	return maxToolTurns
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
@@ -70,4 +75,5 @@ func init() {
 	RootCmd.PersistentFlags().StringVar(&workspaceDir, "ws", ".", "workspace directory path (defaults to current working directory)")
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
+	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", 10, "Maximum consecutive tool-call turns allowed per generation")
 }

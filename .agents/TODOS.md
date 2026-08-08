@@ -4,22 +4,28 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
-## In-process agent tooling doesn't exist yet
+## Dedicated `wackypub init` command
 
-The plan (see `.agents/AGENTS.md`'s Project Overview and CLI/SDK/tool
-documentation pattern) is for `AgentSDK` operations to eventually be
-callable as in-process tools by an agent running in the same process,
-without shelling out to the `wackypub` binary. None of that exists yet -
-today `AgentSDK` methods are only reachable via the CLI. When it's built,
-it should reuse the same command descriptions/argument docs that the CLI's
-`Short`/`Long`/flag help text already carries, rather than a hand-written
-third copy of "what this operation does." Worth deciding at that point
-whether descriptions live on the `AgentSDK` method doc comments (with CLI
-and tool-schema generation both reading from there) or in some other shared
-metadata structure - not decided yet. `AgentInspection` (`AgentSDK.InspectAgent`)
-is a step in this direction: it returns a typed struct rather than
-pre-formatted text, so a future tool layer can consume it directly instead
-of parsing `workspace`'s CLI output.
+Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.
+
+## Future Scratchpad management (`wackypub scratchpad` CLI commands)
+
+Scratchpad slots are managed in-session via built-in agent tools (`set_scratchpad`/`get_scratchpad`) and command I/O redirection (see DECISIONS.md D18). Adding CLI inspection commands (`wackypub agent <id> scratchpad list/read/clear`) would allow human operators or external tooling to inspect and manage persistent scratchpad slots directly.
+
+## Open question: does `WACKYPUB_ALLOWED_AGENTS` restrict CWD-based invocations in general, or only actual tool-call context?
+
+Flagged during the D16 design discussion, deliberately deferred. If
+`WACKYPUB_ALLOWED_AGENTS` is checked purely based on "does CWD fall under
+this agent's folder," then a human who `cd`s into agent A's folder and
+manually runs `wackypub agent B ...` to debug something also gets
+restricted by A's allowlist - even though there's no actual deadlock or
+authorization risk in that case, since a human isn't "agent A calling B."
+The alternative is scoping the check to only apply when the invocation is
+actually happening as a tool call spawned from A's own live generation
+(e.g. via an explicit signal set only during a real tool-use loop, such as
+`WACKYPUB_CALL_CHAIN` already being non-empty), which would leave manual/
+debugging use from inside an agent's folder unrestricted. Needs a decision
+if this behavior should be refined; currently implemented with the simpler CWD-only check (see DECISIONS.md D16).
 
 ## Drop the `adk-utils-go` fork once upstream catches up
 

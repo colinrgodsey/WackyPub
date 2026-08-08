@@ -25,15 +25,17 @@ source-controllable, and inspectable without tooling.
 operation lives on `AgentSDK` (`pkg/agent/sdk.go`) first; the `cobra.Command`
 for it just parses args and calls that method. This isn't incidental
 structure - the primary consumers of the CLI are expected to be *other agent
-platforms* shelling out to `wackypub`, not humans typing commands, so command
-help text needs to be complete and unambiguous enough for an LLM to use
-correctly from `--help` output alone (full description, every argument
-explained, no assumed context). Eventually, operations will also be exposed
-as in-process tools an agent can call directly from inside the same process
-(skipping the subprocess/CLI round-trip) - see the "CLI/SDK/tool
-documentation" pattern below and TODOS.md. Keeping the CLI layer thin and
-the SDK method as the single source of behavior is what makes that possible
-without re-implementing anything twice.
+platforms*, and specifically a tool that runs a single `wackypub` subcommand
+per call (not a shell, not a hand-authored tool schema wrapping `AgentSDK`
+methods - see DECISIONS.md D13 for why). That means command help text needs
+to be complete and unambiguous enough for an LLM to use correctly from
+`--help` output alone (full description, every argument explained, no
+assumed context) - it's the only documentation that caller ever sees.
+Separately, `AgentSDK` itself stays a fully supported integration path for
+Go-native agent platforms or other implementers that want direct in-process
+calls without a subprocess at all. Keeping the CLI layer thin and the SDK
+method as the single source of behavior is what lets both callers share the
+same implementation and documentation without duplicating either.
 
 **Module**: `github.com/colinrgodsey/WackyPubAI` (see `go.mod`)
 **Go Version**: 1.25.7
@@ -143,6 +145,51 @@ this command" a one-second lookup instead of a grep.
 
 ## Patterns & Conventions
 
+### No magic strings - a string literal used more than once becomes a named constant
+
+If a string literal appears more than once - a filename (`"runtime.json"`,
+`"AGENTS.md"`), a role (`"user"`, `"model"`), an env var name
+(`"WACKYPUB_CALL_CHAIN"`), a metadata key, a flag name - it becomes a
+package-level `const` (or an exported one, if other packages need it too),
+not a second copy of the literal typed out again.
+
+**Why**: a typo in a repeated string literal compiles fine and fails at
+runtime, sometimes silently (a mistyped role string just doesn't match
+anything, a mistyped filename just doesn't get found); a typo in an
+identifier fails to build. A named constant also makes the value renameable
+from one place instead of a grep-and-hope across the codebase.
+
+This applies going forward; existing code has known instances of this not
+yet being followed (e.g. `"user"`/`"model"` role strings, `"AGENTS.md"`/
+`"MEMORY.md"`/`"session.jsonl"`/`"runtime.json"` filenames appearing as
+literals in multiple files) - bring a file into line when you're already
+touching it for another reason, rather than treating this as a mandate to
+sweep the whole codebase in one pass.
+
+### Don't swallow errors
+
+An error return value gets returned/wrapped to the caller, or there's a
+one-line comment explaining why ignoring it is provably safe. It never just
+disappears - not via `_ = fn()`/`x, _ := fn()` discarding it outright, and
+not via `if err == nil { ... }` with no `else`, which silently does nothing
+(or worse, silently succeeds with a zero value) on the failure path instead
+of surfacing it.
+
+**Why**: a swallowed error turns a real failure into either wrong behavior
+that looks like success, or a security-relevant check that fails open
+instead of closed. Both are much harder to debug later than a propagated
+error would have been, because there's no signal anything went wrong at all.
+
+Concrete examples in this repo worth fixing opportunistically (not a mandate
+to sweep): `ValidateAgentTarget` (`pkg/agent/workspace.go`) skips its entire
+`WACKYPUB_ALLOWED_AGENTS` authorization check if `os.Getwd()` errors
+(`if err == nil { ... }`, no `else`) - failing open on a security-relevant
+check rather than failing closed. `InspectAgentDir`'s tool discovery
+(`discovered, shadowed, _ := DiscoverAgentTools(agentDir)`) discards a real
+error return entirely, so a broken `tools/` directory (permission error,
+whatever) reports "0 tools found," indistinguishable from "no `tools/`
+directory at all."
+
 ### `session.jsonl` is `genai.Content`, not a custom struct
 
 Every line is a serialized `genai.Content` (`{"role": "user"|"model",
@@ -182,7 +229,7 @@ once as a branch in
 `executeAgentDispatcher` so `wackypub agent <agent_id> add ...` (agent ID
 first) also works. When adding a new subcommand, wire both.
 
-### Every command is CLI + SDK, and eventually + in-process tool - keep the docs shared, not duplicated
+### Every command is CLI + SDK - keep the docs shared, not duplicated
 
 The intended shape for any new operation is: one `AgentSDK` method
 (`pkg/agent/sdk.go`) that does the work, one `cobra.Command` that's a thin
@@ -190,12 +237,12 @@ argument-parsing wrapper around it. A given command's CLI form and SDK form
 should describe the same operation with the same argument semantics - not
 two independently-drifting descriptions of "roughly the same thing."
 
-This matters beyond code reuse: the CLI is meant to be self-documenting
-enough that an agent platform can drive it correctly from `wackypub agent
-<cmd> --help` alone, and when an in-process tool layer gets built (calling
-`AgentSDK` methods directly instead of shelling out - see TODOS.md), it
-should be able to reuse the same command descriptions and argument docs
-rather than have someone hand-write a third copy for a tool schema. Concretely:
+This matters beyond code reuse: an agent platform's tool is constrained to
+running one `wackypub` subcommand per call (see DECISIONS.md D13) - it never
+sees `AgentSDK` directly, and `--help` is the only documentation it ever
+gets. So the CLI has to be self-documenting enough to drive correctly from
+`wackypub agent <cmd> --help` alone, with no separate tool schema to fall
+back on. Concretely:
 
 - Write a cobra command's `Short`/`Long` and flag descriptions as if an LLM
   agent - not a human skimming `--help` - is the primary reader: state what
@@ -203,10 +250,14 @@ rather than have someone hand-write a third copy for a tool schema. Concretely:
   side effect (e.g. "acquires the session lock", "rewrites session.jsonl in
   place") plainly enough to act on without reading the source.
 - Keep that description anchored to the `AgentSDK` method's doc comment as
-  the source of truth where the two overlap, so when a future tool schema
-  needs "the description of this operation," it has one place to pull from
-  instead of reconciling CLI help text against SDK doc comments that have
-  quietly diverged.
+  the source of truth where the two overlap, so a Go-native caller reading
+  the SDK doc comment and an agent reading `--help` see the same thing,
+  instead of two descriptions that quietly diverge over time.
+- If a task pattern needs more than `--help` can economically provide on
+  its own (a multi-step workflow spanning several commands, say), that's
+  what a skill is for - it should describe *when*/*why* to use commands
+  together and point at `--help` for argument-level detail, not duplicate
+  argument documentation that already exists in the CLI.
 
 `wackypub workspace [agent_id]` (`AgentSDK.ListAgents`/`InspectAgent`,
 `pkg/agent/workspace.go`) exists specifically to make workspace setup
@@ -299,9 +350,9 @@ check `cmd/root.go`'s persistent flags first.
    delegate to a package-level function that does the actual work without
    locking (so it's independently testable/reusable and callable without
    going through the CLI). Give it a doc comment that fully states what it
-   does, its arguments, and any side effects: this is the description a
-   future in-process tool wrapper will reuse, so write it as the canonical
-   one, not CLI-specific throwaway text.
+   does, its arguments, and any side effects: this is what a Go-native
+   caller importing `pkg/agent` reads instead of `--help`, so write it as
+   the canonical description, not CLI-specific throwaway text.
 2. Add the `cobra.Command` in `cmd/agent.go`, following the existing
    `add`/`generate`/`prompt`/`strip-reasoning` shape (load the SDK, resolve
    `agent_id` from args, call the `AgentSDK` method, print a result). Write

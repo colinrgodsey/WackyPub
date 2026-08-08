@@ -1,10 +1,15 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -22,6 +27,7 @@ type FolderAgent struct {
 	MemoryPrompt  string
 	Model         model.LLM
 	ADKAgent      agent.Agent
+	MaxToolTurns  int
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
@@ -78,11 +84,14 @@ func LoadFolderAgent(wsDir string, agentID string) (*FolderAgent, error) {
 		MemoryPrompt:  memoryContent,
 		Model:         llmModel,
 		ADKAgent:      ag,
+		MaxToolTurns:  10,
 	}, nil
 }
 
 // GenerateTurn performs the agent generation turn for the current session.
 // Injects MEMORY.md between <PERSISTENT_MEMORY> tags as user turn 1, followed by session.jsonl turns.
+// Automatically discovers and registers executable tools from <agent_dir>/tools/ and executes
+// tool calls in a loop per D17.
 func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	// 1. Check for context window compaction trigger before generating
 	_, err := CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
@@ -91,68 +100,331 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 		fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)
 	}
 
-	// Re-read memory in case compaction updated MEMORY.md
-	memContent, _ := ReadMemoryFile(fa.AgentDir)
-	turns, err := ReadSessionTurns(fa.AgentDir)
+	// Discover tools for agent
+	discoveredTools, _, err := DiscoverAgentTools(fa.AgentDir)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to discover agent tools: %w", err)
+	}
+	toolPathMap := make(map[string]string)
+	if len(discoveredTools) > 0 {
+		toolsDir := filepath.Join(fa.AgentDir, ToolsDirName)
+		filepath.Walk(toolsDir, func(path string, info os.FileInfo, err error) error {
+			if err == nil && !info.IsDir() && info.Mode()&0111 != 0 {
+				if _, exists := toolPathMap[info.Name()]; !exists {
+					toolPathMap[info.Name()] = path
+				}
+			}
+			return nil
+		})
 	}
 
-	// 2. Build full contents array for LLM request
-	var contents []*genai.Content
+	var decls []*genai.FunctionDeclaration
 
-	// First user turn is ALWAYS the system prompt plus current contents of MEMORY.md in
-	// <PERSISTENT_MEMORY> tags, sent as a standard user turn (not a "system" role message)
-	// for broad compatibility across OpenAI-compatible backends.
-	memTurnText := FormatPersistentMemoryTurn(memContent)
-	firstTurnText := fa.SystemPrompt + "\n\n" + memTurnText
-	contents = append(contents, genai.NewContentFromText(firstTurnText, "user"))
+	// Built-in tool 1: set_scratchpad
+	decls = append(decls, &genai.FunctionDeclaration{
+		Name:        "set_scratchpad",
+		Description: "Save a text payload or intermediate command output into a persistent session scratchpad slot by integer ID.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"id": {
+					Type:        genai.TypeInteger,
+					Description: "Integer ID of the scratchpad slot",
+				},
+				"text": {
+					Type:        genai.TypeString,
+					Description: "Text content to store in the scratchpad slot",
+				},
+			},
+			Required: []string{"id", "text"},
+		},
+	})
 
-	// Append turns directly from session.jsonl (already genai.Content)
-	contents = append(contents, turns...)
+	// Built-in tool 2: get_scratchpad
+	decls = append(decls, &genai.FunctionDeclaration{
+		Name:        "get_scratchpad",
+		Description: "Retrieve stored text from a persistent session scratchpad slot by integer ID.",
+		Parameters: &genai.Schema{
+			Type: genai.TypeObject,
+			Properties: map[string]*genai.Schema{
+				"id": {
+					Type:        genai.TypeInteger,
+					Description: "Integer ID of the scratchpad slot to read",
+				},
+			},
+			Required: []string{"id"},
+		},
+	})
 
-	// Collapse consecutive user turns (e.g. multiple `add` calls, or the
-	// injected first turn landing before another user turn) into single
-	// messages — many backends reject or mishandle non-alternating roles.
-	// session.jsonl itself is left untouched; this only affects what's sent.
-	contents = MergeConsecutiveUserTurns(contents)
-
-	// 3. Issue LLM generation request
-	req := &model.LLMRequest{
-		Model:    fa.Model.Name(),
-		Contents: contents,
+	for _, name := range discoveredTools {
+		decls = append(decls, &genai.FunctionDeclaration{
+			Name:        name,
+			Description: fmt.Sprintf("Command %s", name),
+			Parameters: &genai.Schema{
+				Type: genai.TypeObject,
+				Properties: map[string]*genai.Schema{
+					"args": {
+						Type:        genai.TypeArray,
+						Description: "List of CLI command line arguments passed positionally to the tool",
+						Items: &genai.Schema{
+							Type: genai.TypeString,
+						},
+					},
+					"env": {
+						Type:        genai.TypeObject,
+						Description: "Key-value object map of environment variables to set for the tool invocation",
+					},
+					"stdin_scratchpad_id": {
+						Type:        genai.TypeInteger,
+						Description: "Optional scratchpad slot integer ID to pipe as stdin into the command",
+					},
+					"stdout_scratchpad_id": {
+						Type:        genai.TypeInteger,
+						Description: "Optional scratchpad slot integer ID to redirect stdout output into",
+					},
+				},
+			},
+		})
 	}
 
-	var responseContent *genai.Content
-	for resp, err := range fa.Model.GenerateContent(ctx, req, false) {
+	reqConfig := &genai.GenerateContentConfig{
+		Tools: []*genai.Tool{
+			{
+				FunctionDeclarations: decls,
+			},
+		},
+	}
+
+	maxTurns := fa.MaxToolTurns
+	if maxTurns <= 0 {
+		maxTurns = 10
+	}
+
+	for turnCount := 0; turnCount < maxTurns; turnCount++ {
+		// Re-read memory and session turns on each iteration
+		memContent, _ := ReadMemoryFile(fa.AgentDir)
+		turns, err := ReadSessionTurns(fa.AgentDir)
 		if err != nil {
-			return "", fmt.Errorf("generation error: %w", err)
+			return "", err
 		}
-		if resp != nil && resp.Content != nil {
-			responseContent = resp.Content
+
+		// Build full contents array for LLM request
+		var contents []*genai.Content
+
+		// First user turn is ALWAYS system prompt + MEMORY.md
+		memTurnText := FormatPersistentMemoryTurn(memContent)
+		firstTurnText := fa.SystemPrompt + "\n\n" + memTurnText
+		contents = append(contents, genai.NewContentFromText(firstTurnText, "user"))
+
+		// Append turns directly from session.jsonl
+		contents = append(contents, turns...)
+
+		// Collapse consecutive user turns
+		contents = MergeConsecutiveUserTurns(contents)
+
+		// Issue LLM generation request
+		req := &model.LLMRequest{
+			Model:    fa.Model.Name(),
+			Contents: contents,
+			Config:   reqConfig,
+		}
+
+		var responseContent *genai.Content
+		for resp, err := range fa.Model.GenerateContent(ctx, req, false) {
+			if err != nil {
+				return "", fmt.Errorf("generation error: %w", err)
+			}
+			if resp != nil && resp.Content != nil {
+				responseContent = resp.Content
+			}
+		}
+
+		if responseContent == nil || len(responseContent.Parts) == 0 {
+			return "", fmt.Errorf("received empty response from agent")
+		}
+
+		// Check for FunctionCall parts
+		var funcCalls []*genai.FunctionCall
+		for _, part := range responseContent.Parts {
+			if part != nil && part.FunctionCall != nil {
+				funcCalls = append(funcCalls, part.FunctionCall)
+			}
+		}
+
+		if len(funcCalls) == 0 {
+			// Final text response
+			generatedResponse := ContentText(responseContent)
+			if generatedResponse == "" {
+				return "", fmt.Errorf("received empty text response from agent")
+			}
+
+			persistContent := responseContent
+			if !fa.RuntimeConfig.SupportsReasoningDetails {
+				persistContent = StripReasoningDetails(responseContent)
+			}
+			if err := AppendSessionContent(fa.AgentDir, persistContent); err != nil {
+				return generatedResponse, fmt.Errorf("failed to append turn to session.jsonl: %w", err)
+			}
+
+			return generatedResponse, nil
+		}
+
+		// Model emitted tool call(s): append assistant response turn to session.jsonl
+		persistContent := responseContent
+		if !fa.RuntimeConfig.SupportsReasoningDetails {
+			persistContent = StripReasoningDetails(responseContent)
+		}
+		if err := AppendSessionContent(fa.AgentDir, persistContent); err != nil {
+			return "", fmt.Errorf("failed to append function call turn to session.jsonl: %w", err)
+		}
+
+		// Execute each requested tool and collect FunctionResponse parts
+		var frParts []*genai.Part
+		for _, fc := range funcCalls {
+			var toolOutput string
+			if fc.Name == "set_scratchpad" {
+				id, hasID := parseIntArg(fc.Args["id"])
+				rawText, hasText := fc.Args["text"]
+				text, isString := rawText.(string)
+				if !hasID {
+					toolOutput = "Error: missing or invalid scratchpad id"
+				} else if !hasText || !isString {
+					toolOutput = "Error: missing or invalid scratchpad text"
+				} else {
+					out, err := SetScratchpad(fa.AgentDir, id, text)
+					if err != nil {
+						toolOutput = fmt.Sprintf("Error setting scratchpad %d: %v", id, err)
+					} else {
+						toolOutput = out
+					}
+				}
+			} else if fc.Name == "get_scratchpad" {
+				id, hasID := parseIntArg(fc.Args["id"])
+				if !hasID {
+					toolOutput = "Error: missing or invalid scratchpad id"
+				} else {
+					out, err := GetScratchpad(fa.AgentDir, id)
+					if err != nil {
+						toolOutput = fmt.Sprintf("Error reading scratchpad %d: %v", id, err)
+					} else {
+						toolOutput = out
+					}
+				}
+			} else {
+				toolPath, exists := toolPathMap[fc.Name]
+				if !exists {
+					toolOutput = fmt.Sprintf("Error: tool %q not found", fc.Name)
+				} else {
+					toolOutput = executeTool(ctx, fa.AgentDir, fc.Name, toolPath, fc.Args)
+				}
+			}
+
+			frParts = append(frParts, &genai.Part{
+				FunctionResponse: &genai.FunctionResponse{
+					Name: fc.Name,
+					Response: map[string]any{
+						"output": toolOutput,
+					},
+				},
+			})
+		}
+
+		frContent := &genai.Content{
+			Role:  "user",
+			Parts: frParts,
+		}
+		if err := AppendSessionContent(fa.AgentDir, frContent); err != nil {
+			return "", fmt.Errorf("failed to append function response turn to session.jsonl: %w", err)
 		}
 	}
 
-	if responseContent == nil || len(responseContent.Parts) == 0 {
-		return "", fmt.Errorf("received empty response from agent")
+	return "", fmt.Errorf("exceeded maximum tool turns limit (%d)", maxTurns)
+}
+
+func parseIntArg(val any) (int, bool) {
+	if val == nil {
+		return 0, false
+	}
+	switch v := val.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	case string:
+		i, err := strconv.Atoi(v)
+		if err == nil {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args map[string]any) string {
+	var cmdArgs []string
+	if rawArgs, ok := args["args"]; ok {
+		if slice, ok := rawArgs.([]any); ok {
+			for _, item := range slice {
+				cmdArgs = append(cmdArgs, fmt.Sprintf("%v", item))
+			}
+		} else if slice, ok := rawArgs.([]string); ok {
+			cmdArgs = append(cmdArgs, slice...)
+		}
 	}
 
-	// Extract text for return value
-	generatedResponse := ContentText(responseContent)
-	if generatedResponse == "" {
-		return "", fmt.Errorf("received empty text response from agent")
+	cmd := exec.CommandContext(ctx, toolPath, cmdArgs...)
+	cmd.Dir = agentDir
+	cmd.Env = os.Environ()
+
+	if rawEnv, ok := args["env"]; ok {
+		if envMap, ok := rawEnv.(map[string]any); ok {
+			for k, v := range envMap {
+				cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%v", k, v))
+			}
+		}
 	}
 
-	// 4. Append full assistant Content (preserves all parts: text, thinking, etc.)
-	persistContent := responseContent
-	if !fa.RuntimeConfig.SupportsReasoningDetails {
-		persistContent = StripReasoningDetails(responseContent)
-	}
-	if err := AppendSessionContent(fa.AgentDir, persistContent); err != nil {
-		return generatedResponse, fmt.Errorf("failed to append turn to session.jsonl: %w", err)
+	if stdinID, ok := parseIntArg(args["stdin_scratchpad_id"]); ok {
+		stdinText, err := GetScratchpad(agentDir, stdinID)
+		if err == nil {
+			cmd.Stdin = strings.NewReader(stdinText)
+		}
+	} else if len(args) > 0 {
+		argsJSON, err := json.Marshal(args)
+		if err == nil {
+			cmd.Stdin = bytes.NewReader(argsJSON)
+			cmd.Env = append(cmd.Env, "WACKYPUB_TOOL_ARGS="+string(argsJSON))
+		}
 	}
 
-	return generatedResponse, nil
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	if err != nil {
+		errStr := stderr.String()
+		if errStr == "" {
+			errStr = err.Error()
+		}
+		return fmt.Sprintf("Error executing tool %s: %s", toolName, errStr)
+	}
+
+	out := stdout.String()
+	if stdoutID, ok := parseIntArg(args["stdout_scratchpad_id"]); ok {
+		summary, err := SetScratchpad(agentDir, stdoutID, out)
+		if err != nil {
+			return fmt.Sprintf("Error writing output to scratchpad %d: %v", stdoutID, err)
+		}
+		return summary
+	}
+
+	out = strings.TrimSpace(out)
+	if out == "" {
+		out = "Command completed with no output."
+	}
+	return out
 }
 
 // Helper to run ADK runner session for folder agent

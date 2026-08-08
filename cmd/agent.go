@@ -17,6 +17,12 @@ var (
 	messageFlag string
 )
 
+func newSDK(wsDir string) *adkAgent.AgentSDK {
+	sdk := adkAgent.NewSDK(wsDir)
+	sdk.MaxToolTurns = GetMaxToolTurns()
+	return sdk
+}
+
 var agentCmd = &cobra.Command{
 	Use:   "agent <agent_id>",
 	Short: "Manage folder-based agent sessions (<ws_dir>/<agent_id>)",
@@ -40,8 +46,11 @@ Arguments:
 Acquires the session lock for the duration of the append. Creates the agent directory if it
 does not already exist.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		var userMsg string
@@ -103,8 +112,11 @@ history currently exists. Use "prompt" to append a user turn and generate in one
 
 Acquires the session lock for the duration of the operation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -146,8 +158,11 @@ otherwise be rejected if ever replayed to a backend that didn't produce them.
 Prints the number of turns that were modified. Acquires the session lock for the duration of
 the rewrite.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -182,8 +197,11 @@ Arguments:
 Read-only: does not modify session.jsonl. Acquires the session lock for the duration of the
 read.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -221,8 +239,11 @@ Arguments:
 Prints nothing (empty output, no error) if the agent has no MEMORY.md yet. Read-only: does not
 modify anything. Acquires the session lock for the duration of the read.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -261,8 +282,11 @@ whose backend isn't configured yet.
 
 Read-only: does not modify anything.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -299,8 +323,11 @@ Arguments:
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		if len(args) >= 1 {
@@ -343,8 +370,11 @@ Arguments:
 Prints the generated final-answer text to stdout (reasoning/thinking text is excluded from
 what's printed, though it is still persisted to session.jsonl).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
-		sdk := adkAgent.NewSDK(wsDir)
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
 
 		var agentID string
 		var userMsg string

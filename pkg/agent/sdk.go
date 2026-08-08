@@ -12,6 +12,7 @@ import (
 // AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
 type AgentSDK struct {
 	WorkspaceDir string
+	MaxToolTurns int
 }
 
 // NewSDK creates an SDK instance bound to a workspace directory.
@@ -21,6 +22,7 @@ func NewSDK(workspaceDir string) *AgentSDK {
 	}
 	return &AgentSDK{
 		WorkspaceDir: workspaceDir,
+		MaxToolTurns: 10,
 	}
 }
 
@@ -38,6 +40,12 @@ func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
 	if message == "" {
 		return fmt.Errorf("message cannot be empty")
 	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -60,6 +68,12 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
 
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {
@@ -70,6 +84,9 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
+	}
+	if s.MaxToolTurns > 0 {
+		fa.MaxToolTurns = s.MaxToolTurns
 	}
 
 	resp, err := fa.GenerateTurn(ctx)
@@ -88,6 +105,12 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	if userMessage == "" {
 		return "", fmt.Errorf("userMessage cannot be empty")
 	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -110,6 +133,9 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
 	}
+	if s.MaxToolTurns > 0 {
+		fa.MaxToolTurns = s.MaxToolTurns
+	}
 
 	resp, err := fa.GenerateTurn(ctx)
 	if err != nil {
@@ -121,6 +147,12 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 
 // GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.
 func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	return LoadFolderAgent(s.WorkspaceDir, agentID)
 }
 
@@ -145,6 +177,12 @@ func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
 
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
 		return &AgentInspection{AgentID: agentID, AgentDir: agentDir}, nil
@@ -161,6 +199,16 @@ func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 
 // ReadSession returns all conversation turns logged in <ws_dir>/<agent_id>/session.jsonl.
 func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {
@@ -173,6 +221,16 @@ func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
 
 // ReadMemory returns the current contents of <ws_dir>/<agent_id>/MEMORY.md.
 func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {
@@ -192,6 +250,12 @@ func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
 	if agentID == "" {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
@@ -215,6 +279,12 @@ func (s *AgentSDK) StripReasoningDetails(agentID string) (int, error) {
 		return 0, fmt.Errorf("agentID cannot be empty")
 	}
 
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return 0, err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {
@@ -227,6 +297,16 @@ func (s *AgentSDK) StripReasoningDetails(agentID string) (int, error) {
 
 // CompactSession manually triggers session compaction evaluation for an agent.
 func (s *AgentSDK) CompactSession(ctx context.Context, agentID string) (bool, error) {
+	if agentID == "" {
+		return false, fmt.Errorf("agentID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return false, err
+	}
+	defer cleanup()
+
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
 	if err != nil {

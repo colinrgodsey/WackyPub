@@ -2,9 +2,18 @@ package agent
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+)
+
+const (
+	RootMarkerFile    = "WACKYPUB_ROOT"
+	AllowedAgentsFile = "WACKYPUB_ALLOWED_AGENTS"
+	CallChainEnvVar   = "WACKYPUB_CALL_CHAIN"
+	ToolsDirName      = "tools"
 )
 
 // agentDirSignals are the files whose presence (directly inside a directory)
@@ -91,6 +100,178 @@ type AgentInspection struct {
 	// genai.Content - see .agents/AGENTS.md's session.jsonl corruption
 	// gotcha. Zero in the common case.
 	SessionCorruptLines int
+	AllowedAgentsExists bool
+	AllowedAgents       []string
+
+	ToolsDirExists  bool
+	DiscoveredTools []string
+	ShadowedTools   []string
+}
+
+// ResolveWorkspaceDir resolves the workspace directory according to D15:
+// - If isExplicit is true (--ws was explicitly specified), wsFlag must contain RootMarkerFile directly.
+// - If isExplicit is false (default), walk up from CWD looking for RootMarkerFile. Error if not found.
+func ResolveWorkspaceDir(wsFlag string, isExplicit bool) (string, error) {
+	if isExplicit {
+		clean := filepath.Clean(wsFlag)
+		if !pathExists(filepath.Join(clean, RootMarkerFile)) {
+			return "", fmt.Errorf("workspace directory %q does not contain %s marker file", wsFlag, RootMarkerFile)
+		}
+		return clean, nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	dir := cwd
+	for {
+		if pathExists(filepath.Join(dir, RootMarkerFile)) {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("no %s marker file found in current directory (%s) or any parent directory", RootMarkerFile, cwd)
+		}
+		dir = parent
+	}
+}
+
+// ValidateAgentTarget performs cross-agent authorization (AllowedAgentsFile against CWD)
+// and deadlock prevention (CallChainEnvVar) according to D16.
+// Returns a cleanup function that restores CallChainEnvVar to its previous state.
+func ValidateAgentTarget(targetAgentID string) (func(), error) {
+	noopCleanup := func() {}
+	if targetAgentID == "" {
+		return noopCleanup, nil
+	}
+
+	// 1. Authorization check: AllowedAgentsFile against CWD (before resolving workspace root)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current working directory: %w", err)
+	}
+
+	dir := cwd
+	for {
+		if pathExists(filepath.Join(dir, RootMarkerFile)) {
+			break
+		}
+
+		allowedPath := filepath.Join(dir, AllowedAgentsFile)
+		if pathExists(allowedPath) {
+			allowed, err := readAllowedAgents(allowedPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read %s: %w", allowedPath, err)
+			}
+			authorized := false
+			for _, id := range allowed {
+				if id == targetAgentID {
+					authorized = true
+					break
+				}
+			}
+			if !authorized {
+				return nil, fmt.Errorf("agent %q is not in %s allowlist for current agent directory %q", targetAgentID, AllowedAgentsFile, dir)
+			}
+			break
+		}
+
+		if looksLikeAgentDir(dir) {
+			return nil, fmt.Errorf("access to agent %q denied: current agent directory %q has no %s allowlist", targetAgentID, dir, AllowedAgentsFile)
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	// 2. Deadlock cycle check: CallChainEnvVar
+	chainStr := os.Getenv(CallChainEnvVar)
+	var chain []string
+	if chainStr != "" {
+		for _, raw := range strings.Split(chainStr, ",") {
+			id := strings.TrimSpace(raw)
+			if id != "" {
+				chain = append(chain, id)
+				if id == targetAgentID {
+					return nil, fmt.Errorf("agent %q is already in %s (%s); operation rejected to prevent deadlock cycle", targetAgentID, CallChainEnvVar, chainStr)
+				}
+			}
+		}
+	}
+
+	// 3. Update CallChainEnvVar in environment
+	chain = append(chain, targetAgentID)
+	os.Setenv(CallChainEnvVar, strings.Join(chain, ","))
+	cleanup := func() {
+		os.Setenv(CallChainEnvVar, chainStr)
+	}
+
+	return cleanup, nil
+}
+
+func readAllowedAgents(path string) ([]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var result []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		result = append(result, line)
+	}
+	return result, scanner.Err()
+}
+
+// DiscoverAgentTools walks <agentDir>/tools/ recursively for executable files according to D14.
+// Returns discovered unique tool names and shadowing warning messages.
+func DiscoverAgentTools(agentDir string) ([]string, []string, error) {
+	toolsDir := filepath.Join(agentDir, ToolsDirName)
+	if !pathExists(toolsDir) {
+		return nil, nil, nil
+	}
+
+	toolMap := make(map[string]string) // tool name -> file path
+	var discovered []string
+	var shadowed []string
+
+	err := filepath.Walk(toolsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		// Check if file is executable
+		if info.Mode()&0111 != 0 {
+			name := info.Name()
+			if existingPath, exists := toolMap[name]; exists {
+				shadowed = append(shadowed, fmt.Errorf("tool %q at %s is shadowed by %s", name, existingPath, path).Error())
+			} else {
+				discovered = append(discovered, name)
+			}
+			toolMap[name] = path
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sort.Strings(discovered)
+	return discovered, shadowed, nil
 }
 
 // InspectAgentDir builds an AgentInspection for <wsDir>/<agentID> without
@@ -112,6 +293,27 @@ func InspectAgentDir(wsDir, agentID string) (*AgentInspection, error) {
 
 	insp.AgentsMDExists = pathExists(filepath.Join(agentDir, "AGENTS.md"))
 	insp.MemoryMDExists = pathExists(filepath.Join(agentDir, "MEMORY.md"))
+
+	allowedPath := filepath.Join(agentDir, AllowedAgentsFile)
+	if pathExists(allowedPath) {
+		insp.AllowedAgentsExists = true
+		allowed, err := readAllowedAgents(allowedPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", allowedPath, err)
+		}
+		insp.AllowedAgents = allowed
+	}
+
+	toolsDir := filepath.Join(agentDir, ToolsDirName)
+	if pathExists(toolsDir) {
+		insp.ToolsDirExists = true
+		discovered, shadowed, err := DiscoverAgentTools(agentDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover tools in %s: %w", toolsDir, err)
+		}
+		insp.DiscoveredTools = discovered
+		insp.ShadowedTools = shadowed
+	}
 
 	runtimePath := filepath.Join(agentDir, "runtime.json")
 	if fi, err := os.Lstat(runtimePath); err == nil {

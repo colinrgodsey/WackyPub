@@ -30,7 +30,10 @@ missing rather than erroring, so this doubles as a guide for setting up a new ag
 This command is read-only: it never creates or modifies any file.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		wsDir := GetWorkspaceDir()
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
 		sdk := adkAgent.NewSDK(wsDir)
 
 		if len(args) == 1 {
@@ -62,11 +65,11 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	fmt.Printf("\nAgents found: %d\n\n", len(ids))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD")
+	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tALLOWED_AGENTS")
 	for _, id := range ids {
 		insp, err := sdk.InspectAgent(id)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, "error", "-", "-")
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-")
 			continue
 		}
 
@@ -92,7 +95,20 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 			memory = "yes"
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory)
+		toolsStatus := "-"
+		if insp.ToolsDirExists {
+			toolsStatus = fmt.Sprintf("%d tool(s)", len(insp.DiscoveredTools))
+			if len(insp.ShadowedTools) > 0 {
+				toolsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.ShadowedTools))
+			}
+		}
+
+		allowedStatus := "deny-all"
+		if insp.AllowedAgentsExists {
+			allowedStatus = fmt.Sprintf("%d allowed", len(insp.AllowedAgents))
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, allowedStatus)
 	}
 	return w.Flush()
 }
@@ -116,11 +132,23 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	fmt.Printf("Directory: %s\n\n", insp.AgentDir)
 
 	fmt.Println("Files:")
-	fmt.Printf("  AGENTS.md      %s\n", presence(insp.AgentsMDExists))
-	fmt.Printf("  MEMORY.md      %s\n", presence(insp.MemoryMDExists))
+	fmt.Printf("  AGENTS.md                 %s\n", presence(insp.AgentsMDExists))
+	fmt.Printf("  MEMORY.md                 %s\n", presence(insp.MemoryMDExists))
+
+	if insp.AllowedAgentsExists {
+		fmt.Printf("  WACKYPUB_ALLOWED_AGENTS   present (%d allowed)\n", len(insp.AllowedAgents))
+	} else {
+		fmt.Println("  WACKYPUB_ALLOWED_AGENTS   missing (deny-all cross-agent access)")
+	}
+
+	if insp.ToolsDirExists {
+		fmt.Printf("  tools/                    present (%d tool(s) discovered)\n", len(insp.DiscoveredTools))
+	} else {
+		fmt.Println("  tools/                    missing")
+	}
 
 	if !insp.RuntimeJSONExists {
-		fmt.Println("  runtime.json   missing")
+		fmt.Println("  runtime.json              missing")
 	} else {
 		runtimeLine := "present"
 		if insp.RuntimeJSONIsSymlink {
@@ -135,17 +163,17 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 		} else {
 			runtimeLine += ", INVALID"
 		}
-		fmt.Printf("  runtime.json   %s\n", runtimeLine)
+		fmt.Printf("  runtime.json              %s\n", runtimeLine)
 	}
 
 	if !insp.SessionJSONLExists {
-		fmt.Println("  session.jsonl  missing (no turns yet)")
+		fmt.Println("  session.jsonl             missing (no turns yet)")
 	} else {
 		sessionLine := fmt.Sprintf("present, %d turn(s)", insp.SessionTurnCount)
 		if insp.SessionCorruptLines > 0 {
 			sessionLine += fmt.Sprintf(", %d line(s) failed to parse and were skipped", insp.SessionCorruptLines)
 		}
-		fmt.Printf("  session.jsonl  %s\n", sessionLine)
+		fmt.Printf("  session.jsonl             %s\n", sessionLine)
 	}
 
 	var issues []string
@@ -159,6 +187,9 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	}
 	if insp.SessionCorruptLines > 0 {
 		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.SessionCorruptLines))
+	}
+	for _, shadowMsg := range insp.ShadowedTools {
+		issues = append(issues, shadowMsg)
 	}
 
 	if len(issues) > 0 {
