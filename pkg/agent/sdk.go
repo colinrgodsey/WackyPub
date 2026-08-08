@@ -172,8 +172,17 @@ func (s *AgentSDK) ListAgents() ([]string, error) {
 //
 // Does not create the agent directory as a side effect (unlike most other
 // AgentSDK methods) - if it doesn't exist, returns an AgentInspection with
-// AgentDirExists false and every other field zero-valued. If it does exist,
-// acquires the session lock for the duration of the session.jsonl read.
+// AgentDirExists false and every other field zero-valued.
+//
+// Deliberately does not acquire the session lock. AcquireSessionLock blocks
+// until the lock is free, and InspectAgent is exactly the kind of call an
+// agent's own tool loop can make against itself mid-generation (directly, or
+// via wackypub workspace's no-arg summary, which inspects every agent
+// including the caller) - since GenerateTurn already holds that same lock
+// for the whole call, that blocking acquire deadlocks forever. Reading
+// without the lock is safe: ReadSessionTurns already tolerates a torn read
+// gracefully (see AgentInspection.SessionCorruptLines), and the lock's real
+// job is serializing concurrent writers, not protecting readers.
 func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -183,12 +192,6 @@ func (s *AgentSDK) InspectAgent(agentID string) (*AgentInspection, error) {
 	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
 		return &AgentInspection{AgentID: agentID, AgentDir: agentDir}, nil
 	}
-
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
 
 	return InspectAgentDir(s.WorkspaceDir, agentID)
 }
@@ -205,13 +208,11 @@ func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
 	}
 	defer cleanup()
 
+	// No session lock: ReadSessionTurns already tolerates a torn read
+	// gracefully (skipped lines surface via SessionCorruptLines elsewhere),
+	// and the blocking acquire here is exactly what can deadlock against an
+	// agent's own already-held lock during live generation.
 	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
 	return ReadSessionTurns(agentDir)
 }
 
@@ -227,13 +228,10 @@ func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
 	}
 	defer cleanup()
 
+	// No session lock needed: MEMORY.md isn't session.jsonl, and this read
+	// doesn't need protecting against the same writers that file's lock
+	// serializes.
 	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
 	return ReadMemoryFile(agentDir)
 }
 
@@ -253,13 +251,9 @@ func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
 	}
 	defer cleanup()
 
-	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return "", fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
+	// No session lock needed: RenderAgentSystemPrompt reads AGENTS.md and
+	// skills/, never session.jsonl - acquiring the lock here only added an
+	// unnecessary blocking dependency on whatever else might be holding it.
 	return RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
 }
 
