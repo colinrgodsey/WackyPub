@@ -4,31 +4,53 @@ Deferred work and known gaps. Not a backlog of feature ideas - only things
 that are already known to be incomplete, fragile, or blocked on something
 external.
 
-## Skills system: distilled, discoverable knowledge for agents
+## Modular compaction strategy
 
-Live testing repeatedly showed agents "hunt and peck" to figure out how to
-drive `wackypub` correctly - calling
-`--help`, misreading subcommand structure, needing several failed attempts
-before landing on a working invocation (see D17's tool protocol). A skills
-system would let an agent load pre-written, distilled guidance instead of
-re-deriving it from raw `--help` output every single time.
+`CheckAndCompactSession`/`CompactionDirectivePrompt` (`pkg/agent/compaction.go`)
+is a single hardcoded approach: an LLM directive prompt that summarizes
+archived turns into a `<PERSISTENT_MEMORY>` addendum. There's no seam for
+a different strategy (e.g. plain truncation with no summarization,
+externally pluggable compaction, per-agent-configurable directives beyond
+the AGENTS.md `## Memory Focus` override already supported). Worth
+factoring compaction behind some kind of strategy interface/config knob
+instead of the one fixed implementation, once a second real use case for
+a different strategy actually shows up.
 
-Proposed shape, modeled on D14's `tools/` discovery:
-- A `skills/` folder, recursively discovered the same way `tools/` is -
-  plain files/folders, no bespoke DSL.
-- Each skill is markable as either **always-loaded** (its content is
-  injected into context automatically every generation, e.g. folded into
-  the system prompt or first turn) or **on-demand** (only a short
-  description is always visible; the agent chooses to load the full
-  content, similar to how tools are discovered but not necessarily
-  invoked).
-- Otherwise should behave like a typical skill system (e.g. Claude Code's
-  own Skill tool) - not a novel format.
+## Real unit test coverage for compaction prefix preservation
 
-Not yet designed: how on-demand loading is triggered (a built-in tool
-alongside `get_scratchpad`? a CLI subcommand agents call directly?), how
-skill content composes with `tools/` discovery output in the same prompt,
-and whether skills are workspace-global or per-agent.
+`TestCompactionPrefixPreservation` (`pkg/agent/compaction_test.go`) is
+misleadingly named - it only checks that `MEMORY.md` still exists after a
+compaction call that fails against a fake HTTP endpoint. It does not
+actually verify that compaction preserves the request prefix: the same
+system prompt, the same tool declarations, and the same initial portion
+of turns before and after compaction runs, with only the archived middle
+replaced by the memory addendum. A real test would need to capture the
+outgoing wire payload (httptest, same pattern as `openai_model_test.go`'s
+reasoning-egress tests) before and after a compaction cycle and diff the
+surviving prefix.
+
+## How compaction should treat loaded skills
+
+Once `load_skill` returns a skill's body, it's a normal tool-response
+turn like any other - fully subject to the same compaction/archival
+boundary logic as everything else (D8-ish territory). Most agent harnesses
+hit this same problem: is a loaded skill's full text worth preserving
+verbatim across compaction (bloats `<PERSISTENT_MEMORY>`), or is it enough
+for the memory addendum to note "skill X was loaded" so the agent can
+`load_skill` it again if it's actually still needed (cheap, matches how
+compaction already treats everything else as re-derivable)? No decision
+made yet - needs to happen before/alongside the skills system's first
+implementation, not as an afterthought once agents start actually
+accumulating loaded-skill turns that get archived.
+
+## `load_skill_extra` for skill reference files
+
+Real-world skill folders often ship extra reference files alongside
+`SKILL.md`, referenced from the skill body via relative paths (images,
+longer reference docs, example data). Eventually want a companion tool -
+`load_skill_extra(skill_name, relative_path)` - so an agent can pull one
+of those in on demand rather than the skills system only ever exposing
+`SKILL.md`'s own body.
 
 ## No total budget on cross-agent call depth, only cycle prevention
 

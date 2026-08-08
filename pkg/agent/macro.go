@@ -40,6 +40,15 @@ func RenderAgentSystemPrompt(wsDir, agentID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("macro expansion failed for %s: %w", agentsPath, err)
 	}
+
+	autoloadBlock, err := RenderAutoloadedSkills(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to render autoloaded skills for %s: %w", agentID, err)
+	}
+	if autoloadBlock != "" {
+		expanded = expanded + "\n\n" + autoloadBlock
+	}
+
 	return expanded, nil
 }
 

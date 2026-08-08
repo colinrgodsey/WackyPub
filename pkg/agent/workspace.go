@@ -106,6 +106,10 @@ type AgentInspection struct {
 	ToolsDirExists  bool
 	DiscoveredTools []string
 	ShadowedTools   []string
+
+	SkillsDirExists  bool
+	DiscoveredSkills []string
+	ShadowedSkills   []string
 }
 
 // ResolveWorkspaceDir resolves the workspace directory according to D15:
@@ -341,6 +345,24 @@ func InspectAgentDir(wsDir, agentID string) (*AgentInspection, error) {
 		}
 		insp.DiscoveredTools = discovered
 		insp.ShadowedTools = shadowed
+	}
+
+	skillsDir := filepath.Join(agentDir, SkillsDirName)
+	if pathExists(skillsDir) {
+		insp.SkillsDirExists = true
+		_, onDemand, alwaysLoaded, shadowed, err := DiscoverAgentSkillsMap(agentDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to discover skills in %s: %w", skillsDir, err)
+		}
+		var skillNames []string
+		for _, sk := range onDemand {
+			skillNames = append(skillNames, sk.Name)
+		}
+		for _, sk := range alwaysLoaded {
+			skillNames = append(skillNames, sk.Name+" (always_load)")
+		}
+		insp.DiscoveredSkills = skillNames
+		insp.ShadowedSkills = shadowed
 	}
 
 	runtimePath := filepath.Join(agentDir, "runtime.json")

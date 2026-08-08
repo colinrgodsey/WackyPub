@@ -65,11 +65,11 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 	fmt.Printf("\nAgents found: %d\n\n", len(ids))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tALLOWED_AGENTS")
+	fmt.Fprintln(w, "AGENT_ID\tRUNTIME.JSON\tSESSION TURNS\tMEMORY.MD\tTOOLS\tSKILLS\tALLOWED_AGENTS")
 	for _, id := range ids {
 		insp, err := sdk.InspectAgent(id)
 		if err != nil {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-")
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, "error", "-", "-", "-", "-", "-")
 			continue
 		}
 
@@ -103,12 +103,20 @@ func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
 			}
 		}
 
+		skillsStatus := "-"
+		if insp.SkillsDirExists {
+			skillsStatus = fmt.Sprintf("%d skill(s)", len(insp.DiscoveredSkills))
+			if len(insp.ShadowedSkills) > 0 {
+				skillsStatus += fmt.Sprintf(" (%d shadowed)", len(insp.ShadowedSkills))
+			}
+		}
+
 		allowedStatus := "deny-all"
 		if insp.AllowedAgentsExists {
 			allowedStatus = fmt.Sprintf("%d allowed", len(insp.AllowedAgents))
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, allowedStatus)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, runtimeStatus, turns, memory, toolsStatus, skillsStatus, allowedStatus)
 	}
 	return w.Flush()
 }
@@ -145,6 +153,12 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 		fmt.Printf("  tools/                    present (%d tool(s) discovered)\n", len(insp.DiscoveredTools))
 	} else {
 		fmt.Println("  tools/                    missing")
+	}
+
+	if insp.SkillsDirExists {
+		fmt.Printf("  skills/                   present (%d skill(s) discovered)\n", len(insp.DiscoveredSkills))
+	} else {
+		fmt.Println("  skills/                   missing")
 	}
 
 	if !insp.RuntimeJSONExists {
@@ -189,6 +203,9 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 		issues = append(issues, fmt.Sprintf("session.jsonl has %d line(s) that don't parse as JSON turns - they're silently skipped on every read, which can cause the agent to lose context. See .agents/AGENTS.md's session.jsonl corruption gotcha.", insp.SessionCorruptLines))
 	}
 	for _, shadowMsg := range insp.ShadowedTools {
+		issues = append(issues, shadowMsg)
+	}
+	for _, shadowMsg := range insp.ShadowedSkills {
 		issues = append(issues, shadowMsg)
 	}
 

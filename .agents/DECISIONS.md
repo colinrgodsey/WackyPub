@@ -369,12 +369,20 @@ substitute for the other.
 `<agent_dir>/tools/` executables discovered per D14 are registered as LLM function declarations on each generation request.
 
 **Tool Schema Registration**:
-- Executable tools in `tools/` and built-in tools (`set_scratchpad`, `get_scratchpad`) are constructed as Google ADK `tool.Tool` instances using `google.golang.org/adk/v2/tool/functiontool.New`.
-- Strongly typed Go structs (`SetScratchpadArgs`, `GetScratchpadArgs`, `ExecToolArgs`) automatically generate their `genai.FunctionDeclaration` schemas and handle JSON argument unmarshaling and type validation.
-- Executable tool function declarations match the executable's basename with `Description` defaulting to `"Command <Name>"`.
+- Built-in tools (`set_scratchpad`, `get_scratchpad`) and a single generic `run_command` tool covering every discovered executable are constructed as Google ADK `tool.Tool` instances using `google.golang.org/adk/v2/tool/functiontool.New`.
+- Strongly typed Go structs (`SetScratchpadArgs`, `GetScratchpadArgs`, `RunCommandArgs`) automatically generate their `genai.FunctionDeclaration` schemas and handle JSON argument unmarshaling and type validation.
+- Discovered executables under `tools/` are **not** individually registered as separate function declarations - they're dispatched through the one `run_command` tool's `command` argument. `run_command`'s description is built dynamically at agent-load time from the discovered command names, plus general usage guidance (see below), so an agent gets both "what commands exist" and "how command invocation works in general" from a single tool description instead of N near-duplicate `"Command <Name>"` descriptions with no shared context.
+- The command list embedded in the description is always alphabetically sorted (`DiscoverAgentToolsMap` already sorts before returning) - filesystem readdir order is not guaranteed stable across runs, and an unsorted list would change the description's bytes between generations for no reason, defeating prompt caching on every single request.
+
+**`run_command` Usage Guidance** (baked into its description, not repeated per-agent in AGENTS.md):
+- The working directory is always the agent's own directory - there's no way to `cd` elsewhere, since commands don't chain (see TODOS.md for the deliberately-deferred question of whether that's ever needed).
+- `args` entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.
+- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.
+- Running a command with no arguments or `--help` is a legitimate way to learn what it is, how to use it, and what arguments it takes.
 
 **Tool Execution Protocol**:
-- When the model returns a `FunctionCall` part for a tool `X`:
+- When the model returns a `FunctionCall` part for `run_command` naming a command `X`:
+  - The handler validates `X` against the discovered command map first and returns a real error for an unrecognized command (ADK's own dispatch can no longer catch this, since `run_command` itself is always a valid, registered tool).
   - `wackypub` executes `<agent_dir>/tools/X` (or its discovered path) with the positional `args` list.
   - Any key-value entries in `env` are added to the subprocess environment (along with inheriting process environment including `WACKYPUB_CALL_CHAIN`).
   - Full raw JSON arguments are also passed to the tool's stdin and as `WACKYPUB_TOOL_ARGS`.
@@ -390,7 +398,7 @@ substitute for the other.
 - Every `functiontool.New` handler (`set_scratchpad`, `get_scratchpad`, and each discovered tool) propagates that error as its own return value instead of packing failure text into a normal-looking result and always returning `nil`.
 - Google ADK's own tool dispatch (`internal/llminternal/base_flow.go`) turns a non-nil handler error into a `FunctionResponse.Response` shaped as `{"error": "<message>"}`, structurally distinct from the `{"output": "..."}` shape a successful call produces - no extra callback wiring required on our side.
 
-**Why**: A uniform `{args: []string, env: map[string]string}` schema allows arbitrary CLI tool binaries under `tools/` to be invoked natively as subprocesses without requiring every tool to author custom schema metadata parser extensions, keeping discovery fast and compatible with any shell command. Error signaling matters because a model can only react differently to a tool failure if the failure looks different on the wire - previously, `"Error executing tool X: ..."` was just prose living in the same `output` field a successful call would use, so recognizing a failure depended entirely on the model reading it as English rather than on any structural signal.
+**Why**: A uniform `{args: []string, env: map[string]string}` schema allows arbitrary CLI tool binaries under `tools/` to be invoked natively as subprocesses without requiring every tool to author custom schema metadata parser extensions, keeping discovery fast and compatible with any shell command. Error signaling matters because a model can only react differently to a tool failure if the failure looks different on the wire - previously, `"Error executing tool X: ..."` was just prose living in the same `output` field a successful call would use, so recognizing a failure depended entirely on the model reading it as English rather than on any structural signal. Collapsing per-discovered-tool declarations into one `run_command` mirrors how most modern coding agents actually work (a single shell/command-execution tool, not one declaration per binary) - it lets general operating guidance (working directory behavior, argv conventions, "check your scratchpad first," "use `--help` to explore") live in exactly one place instead of being absent or repeated per tool, at the cost of the model no longer seeing each command as its own named function in the schema.
 
 ## D18: Persistent Scratchpad tools and command I/O redirection
 
@@ -445,6 +453,23 @@ Agent generation turns migrate from manual `model.LLMRequest` construction to Go
 
 **Why**: Using ADK's `runner.Runner` and `session.Service` standardizes agent execution on official Google ADK primitives while preserving full filesystem control, multi-turn tool loop fidelity, and `session.jsonl` compatibility.
 
+## D20: Skills system - distilled, discoverable knowledge for agents
+
+Agents can be given pre-written, distilled guidance ("skills") instead of having to re-derive how something works from raw `--help` output or trial and error every session - the same problem `run_command`'s baked-in usage guidance (D17) addresses for command execution in general, but for anything else worth writing down once.
+
+**Discovery**:
+- A `skills/` folder per agent, discovered recursively the same way `tools/` is (D14) - including symlinked "skill packs" shared across agents the same way toolpacks are today.
+- A skill is a folder containing `SKILL.md` with YAML frontmatter: standard `name` and `description` fields, matching the format other agent harnesses already use so off-the-shelf skills can be dropped in as-is, plus one non-standard field: `always_load: true`. `gopkg.in/yaml.v3` is already a dependency (`pkg/config/config.go`), so this doesn't add a new one.
+
+**On-demand skills** (the default, `always_load` unset or `false`):
+- Only `name` + `description` are ever in context - surfaced in the `load_skill` tool's own dynamically-built description, the same pattern `run_command` uses for its command list (D17), always alphabetically sorted by skill name for prompt-cache stability.
+- `load_skill(name)` returns the skill body as a normal tool response (`FunctionResponse`) - the same mechanical pattern `get_scratchpad`/`run_command` already use. There's no "inject into system prompt mid-session" mechanism to build, since ADK's `Instruction` isn't mutable per-turn anyway; a loaded skill just becomes part of the ordinary conversation history from that point on, same as any other tool result.
+
+**Always-loaded skills** (`always_load: true`):
+- Excluded entirely from `load_skill`'s registry - no on-demand entry for something already in context.
+- Bodies are concatenated onto the end of the rendered `Instruction` string (`macro.go`'s system prompt rendering, alongside AGENTS.md), sorted alphabetically by skill name, wrapped as `<AUTOLOADED_SKILLS><SKILL name="...">...</SKILL>...</AUTOLOADED_SKILLS>`.
+
+**Why**: Mirrors D17's `run_command` reasoning - a short, always-visible description plus content loaded only when actually needed keeps the always-in-context cost near zero while still making distilled knowledge discoverable, rather than forcing a choice between "nothing is ever pre-written" and "everything is always in every prompt." Reusing the standard `SKILL.md` + YAML-frontmatter shape (rather than inventing a new format) means existing skills written for other harnesses work here with no translation beyond the one added `always_load` field. Loading a skill as a normal tool response - not a special system-prompt mutation - keeps the mechanism consistent with everything else in the tool-calling system and avoids building a second, bespoke content-injection path alongside the one `FunctionResponse` already provides.
 
 
 

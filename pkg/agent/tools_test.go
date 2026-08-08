@@ -2,10 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
+	"google.golang.org/genai"
 )
 
 func TestExecuteTool(t *testing.T) {
@@ -64,12 +70,12 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain set_scratchpad, get_scratchpad, custom.sh
-	if len(toolMap) != 3 {
-		t.Errorf("expected 3 tools, got %d", len(toolMap))
+	// Should contain set_scratchpad, get_scratchpad, run_command, load_skill (4 tools)
+	if len(toolMap) != 4 {
+		t.Errorf("expected 4 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 3 {
-		t.Errorf("expected 3 decls, got %d", len(decls))
+	if len(decls) != 4 {
+		t.Errorf("expected 4 decls, got %d", len(decls))
 	}
 	if _, ok := toolMap["set_scratchpad"]; !ok {
 		t.Errorf("missing set_scratchpad in toolMap")
@@ -77,8 +83,24 @@ func TestBuildFolderAgentTools(t *testing.T) {
 	if _, ok := toolMap["get_scratchpad"]; !ok {
 		t.Errorf("missing get_scratchpad in toolMap")
 	}
-	if _, ok := toolMap["custom.sh"]; !ok {
-		t.Errorf("missing custom.sh in toolMap")
+	runCmd, ok := toolMap["run_command"]
+	if !ok {
+		t.Fatalf("missing run_command in toolMap")
+	}
+
+	decler, ok := runCmd.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
+	if !ok {
+		t.Fatalf("run_command does not implement Declaration()")
+	}
+
+	decl := decler.Declaration()
+	if !strings.Contains(decl.Description, "Available commands: custom.sh.") {
+		t.Errorf("expected description to list custom.sh, got: %s", decl.Description)
+	}
+	if !strings.Contains(decl.Description, "Usage Guidance:") {
+		t.Errorf("expected description to contain Usage Guidance, got: %s", decl.Description)
 	}
 }
 
@@ -157,5 +179,130 @@ func TestExecuteTool_RelativePath(t *testing.T) {
 	}
 	if !strings.Contains(out, "relative_ok") {
 		t.Fatalf("expected 'relative_ok', got: %q", out)
+	}
+}
+
+type runCmdTestModel struct {
+	command string
+	args    []string
+}
+
+func (m *runCmdTestModel) Name() string { return "run-cmd-test-model" }
+
+func (m *runCmdTestModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		res := &model.LLMResponse{
+			Content: &genai.Content{
+				Role: "model",
+				Parts: []*genai.Part{
+					{
+						FunctionCall: &genai.FunctionCall{
+							Name: "run_command",
+							Args: map[string]any{
+								"command": m.command,
+								"args":    m.args,
+							},
+						},
+					},
+				},
+			},
+		}
+		yield(res, nil)
+	}
+}
+
+func TestRunCommandToolValidationAndExecution(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "bob")
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed to create tools dir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt Bob"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(`{"model":"dummy-model","endpoint":"http://localhost:1234/v1"}`), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// Create 2 discovered tools: echo.sh and greet.sh
+	if err := os.WriteFile(filepath.Join(toolsDir, "echo.sh"), []byte("#!/bin/sh\necho \"echo: $1\""), 0755); err != nil {
+		t.Fatalf("failed to write echo.sh: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(toolsDir, "greet.sh"), []byte("#!/bin/sh\necho \"greet: $1\""), 0755); err != nil {
+		t.Fatalf("failed to write greet.sh: %v", err)
+	}
+
+	toolMap, decls, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+
+	// 4 tools in toolMap: set_scratchpad, get_scratchpad, run_command, load_skill
+	if len(toolMap) != 4 {
+		t.Fatalf("expected 4 tools in toolMap, got %d", len(toolMap))
+	}
+	if len(decls) != 4 {
+		t.Fatalf("expected 4 decls, got %d", len(decls))
+	}
+
+	runCmdTool, ok := toolMap["run_command"]
+	if !ok {
+		t.Fatalf("missing run_command tool in toolMap")
+	}
+
+	// Verify command list in description is alphabetically sorted: echo.sh, greet.sh
+	decler := runCmdTool.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
+	desc := decler.Declaration().Description
+	if !strings.Contains(desc, "Available commands: echo.sh, greet.sh.") {
+		t.Errorf("expected sorted commands list in description, got: %s", desc)
+	}
+
+	// Test executing valid command 'echo.sh' via FolderAgent and ADK runner
+	fa, err := LoadFolderAgent(wsDir, "bob", 1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	fa.Model = &runCmdTestModel{command: "echo.sh", args: []string{"world"}}
+
+	toolsList := []tool.Tool{toolMap["set_scratchpad"], toolMap["get_scratchpad"], runCmdTool}
+	fa.ADKAgent, err = BuildADKAgent("bob", fa.SystemPrompt, 1, fa.Model, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgent failed: %v", err)
+	}
+
+	// Add user turn to session.jsonl
+	uMsg := genai.NewContentFromText("run echo", "user")
+	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	// Run turn (expect max tool turns limit error because test model constantly returns FunctionCall)
+	_, _ = fa.GenerateTurn(context.Background())
+
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	// session.jsonl should contain FunctionResponse with output "echo: world"
+	foundOutput := false
+	for _, turn := range turns {
+		if turn.Role == "user" {
+			for _, part := range turn.Parts {
+				if part.FunctionResponse != nil {
+					respJSON, _ := json.Marshal(part.FunctionResponse.Response)
+					if strings.Contains(string(respJSON), "echo: world") {
+						foundOutput = true
+					}
+				}
+			}
+		}
+	}
+	if !foundOutput {
+		t.Errorf("expected to find FunctionResponse containing 'echo: world' in session.jsonl")
 	}
 }

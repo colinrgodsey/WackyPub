@@ -43,7 +43,8 @@ WackyPubAI manages agents using a file-system-first architecture. Each agent ope
     ├── session.lock       # PID-based Exclusive Process Lock
     ├── WACKYPUB_ALLOWED_AGENTS # Opt-in allowlist of target agents for cross-agent calls
     ├── scratchpad.json    # Persistent session scratchpad slots for large I/O
-    └── tools/             # Discovered executable tool binaries / scripts
+    ├── tools/             # Discovered executable tool binaries / scripts
+    └── skills/            # Discovered skill folders containing SKILL.md
 ```
 
 By decoupling runtime configuration, system prompts, memory, turn logs, tools, and cross-agent authorization into discrete files, agent state is human-readable, source-controllable, and easily inspectable.
@@ -178,7 +179,10 @@ You are Ignis, an ancient wizard.
 
 #### Discovery & Invocation:
 - Recursively walked for executable files (`mode & 0111 != 0`).
-- Discovered tool basenames are registered as function declarations (`genai.FunctionDeclaration`) accepting:
+- Discovered executables under `tools/` are dispatched through a single generic `run_command` tool (`genai.FunctionDeclaration`), rather than N individual declarations.
+- `run_command`'s description is constructed dynamically at agent-load time, embedding an alphabetically sorted list of available commands and general execution guidance (working directory, argv conventions, scratchpad usage, and `--help` exploration).
+- `run_command` accepts:
+  - `command`: Name of the command executable to run from `tools/`.
   - `args`: Array of positional CLI command arguments.
   - `env`: Key-value map of environment variables.
   - `stdin_scratchpad_id`: Optional scratchpad slot ID to pipe as stdin.
@@ -195,6 +199,21 @@ You are Ignis, an ancient wizard.
 - **`set_scratchpad(id: int, text: string)`**: Stores `text` under slot `id`.
 - **`get_scratchpad(id: int)`**: Retrieves stored text from slot `id`.
 - **Command Redirection**: Commands using `stdout_scratchpad_id` store large outputs directly in `scratchpad.json` and return a short summary turn (`"Scratchpad <id> updated (N bytes)"`), preserving LLM context budget.
+
+---
+
+### `skills/` Directory
+
+`<agent_id>/skills/` contains pre-written, distilled skill guidance folders holding `SKILL.md` files with YAML frontmatter (see DECISIONS.md D20).
+
+#### Discovery & Loading Modes:
+- Recursively walked for folders containing `SKILL.md`.
+- `SKILL.md` frontmatter fields:
+  - `name`: Unique skill identifier (defaults to folder name).
+  - `description`: Short description of the skill.
+  - `always_load`: Optional boolean (`true` or `false`).
+- **On-demand Skills** (`always_load: false`): Registered with the `load_skill(name: string)` tool. Available skill names and descriptions are embedded in `load_skill`'s dynamically built description (alphabetically sorted). Invoking `load_skill` returns the skill body as a `FunctionResponse` turn.
+- **Always-loaded Skills** (`always_load: true`): Excluded from `load_skill`. Concatenated onto the rendered system prompt (`Instruction`), sorted alphabetically by skill name, wrapped in `<AUTOLOADED_SKILLS><SKILL name="...">...</SKILL>...</AUTOLOADED_SKILLS>`.
 
 ---
 

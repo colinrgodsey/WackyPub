@@ -47,8 +47,28 @@ type ExecToolResult struct {
 	Output string `json:"output"`
 }
 
+type RunCommandArgs struct {
+	Command            string            `json:"command" jsonschema_description:"Name of the command executable to run from the discovered tools list"`
+	Args               []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool"`
+	Env                map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation"`
+	StdinScratchpadID  *int              `json:"stdin_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to pipe as stdin into the command. The slot must have been set by set_scratchpad in an EARLIER turn, not this same one - tool calls within one turn may run concurrently, so a set_scratchpad call earlier in this same response is not guaranteed to have finished yet."`
+	StdoutScratchpadID *int              `json:"stdout_scratchpad_id,omitempty" jsonschema_description:"Optional scratchpad slot integer ID to redirect stdout output into. Do not read this slot with get_scratchpad in the same turn - wait until your next turn, since the write may not have finished yet."`
+}
+
+type RunCommandResult struct {
+	Output string `json:"output"`
+}
+
+type LoadSkillArgs struct {
+	Name string `json:"name" jsonschema_description:"Name of the skill to load into conversation context"`
+}
+
+type LoadSkillResult struct {
+	Output string `json:"output"`
+}
+
 // BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (set_scratchpad, get_scratchpad)
-// and executable tools discovered under <agent_dir>/tools/.
+// and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
 func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	toolMap := make(map[string]tool.Tool)
 	var decls []*genai.FunctionDeclaration
@@ -94,31 +114,99 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	}
 	addTool(getTool)
 
-	// 3. Discovered executable tools
+	// 3. Single generic run_command tool covering all discovered executables
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent tools: %w", err)
 	}
 
-	for _, name := range discoveredNames {
-		toolName := name
-		toolPath := discoveredMap[name]
-
-		execT, err := functiontool.New(functiontool.Config{
-			Name:        toolName,
-			Description: fmt.Sprintf("Command %s", toolName),
-		}, func(ctx agent.Context, args ExecToolArgs) (ExecToolResult, error) {
-			out, err := executeTool(ctx, agentDir, toolName, toolPath, args)
-			if err != nil {
-				return ExecToolResult{}, err
-			}
-			return ExecToolResult{Output: out}, nil
-		})
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to create tool %s: %w", toolName, err)
-		}
-		addTool(execT)
+	var cmdListStr string
+	if len(discoveredNames) > 0 {
+		cmdListStr = strings.Join(discoveredNames, ", ")
+	} else {
+		cmdListStr = "none"
 	}
+
+	runCmdDesc := fmt.Sprintf(
+		"Execute a command binary from tools/. Available commands: %s.\n\n"+
+			"Usage Guidance:\n"+
+			"- The working directory is always the agent's own directory - there's no way to cd elsewhere, since commands don't chain.\n"+
+			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
+			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
+			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.",
+		cmdListStr,
+	)
+
+	runCmdTool, err := functiontool.New(functiontool.Config{
+		Name:        "run_command",
+		Description: runCmdDesc,
+	}, func(ctx agent.Context, args RunCommandArgs) (RunCommandResult, error) {
+		toolPath, ok := discoveredMap[args.Command]
+		if !ok {
+			return RunCommandResult{}, fmt.Errorf("unknown command %q. Available commands: %s", args.Command, cmdListStr)
+		}
+
+		execArgs := ExecToolArgs{
+			Args:               args.Args,
+			Env:                args.Env,
+			StdinScratchpadID:  args.StdinScratchpadID,
+			StdoutScratchpadID: args.StdoutScratchpadID,
+		}
+		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs)
+		if err != nil {
+			return RunCommandResult{}, err
+		}
+		return RunCommandResult{Output: out}, nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create run_command tool: %w", err)
+	}
+	addTool(runCmdTool)
+
+	// 4. load_skill tool for on-demand skills
+	skillsMap, onDemandSkills, _, err := DiscoverAgentSkills(agentDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to discover agent skills: %w", err)
+	}
+
+	var skillLines []string
+	for _, sk := range onDemandSkills {
+		skillLines = append(skillLines, fmt.Sprintf("- %s: %s", sk.Name, sk.Description))
+	}
+
+	var skillListStr string
+	if len(skillLines) > 0 {
+		skillListStr = strings.Join(skillLines, "\n")
+	} else {
+		skillListStr = "none"
+	}
+
+	loadSkillDesc := fmt.Sprintf(
+		"Load pre-written distilled guidance and instructions for a specific skill into conversation context.\n\n"+
+			"Available skills:\n%s",
+		skillListStr,
+	)
+
+	loadSkillTool, err := functiontool.New(functiontool.Config{
+		Name:        "load_skill",
+		Description: loadSkillDesc,
+	}, func(ctx agent.Context, args LoadSkillArgs) (LoadSkillResult, error) {
+		sk, ok := skillsMap[args.Name]
+		if !ok || sk.AlwaysLoad {
+			var availStr string
+			if len(skillLines) > 0 {
+				availStr = strings.Join(skillLines, "\n")
+			} else {
+				availStr = "none"
+			}
+			return LoadSkillResult{}, fmt.Errorf("unknown skill %q. Available skills:\n%s", args.Name, availStr)
+		}
+		return LoadSkillResult{Output: sk.Body}, nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create load_skill tool: %w", err)
+	}
+	addTool(loadSkillTool)
 
 	return toolMap, decls, nil
 }

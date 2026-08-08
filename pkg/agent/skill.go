@@ -1,0 +1,191 @@
+package agent
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	SkillsDirName = "skills"
+	SkillFileName = "SKILL.md"
+)
+
+type SkillFrontmatter struct {
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
+	AlwaysLoad  bool   `yaml:"always_load"`
+}
+
+type Skill struct {
+	Name        string
+	Description string
+	AlwaysLoad  bool
+	Body        string
+	Path        string
+}
+
+// ParseSkillFile reads SKILL.md at filePath and parses optional YAML frontmatter.
+func ParseSkillFile(filePath string) (*Skill, error) {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read skill file %s: %w", filePath, err)
+	}
+
+	content := string(data)
+	dirPath := filepath.Dir(filePath)
+	folderName := filepath.Base(dirPath)
+
+	var fm SkillFrontmatter
+	body := content
+
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "---") {
+		parts := strings.SplitN(trimmed[3:], "---", 2)
+		if len(parts) == 2 {
+			yamlText := parts[0]
+			body = strings.TrimSpace(parts[1])
+			if err := yaml.Unmarshal([]byte(yamlText), &fm); err != nil {
+				return nil, fmt.Errorf("failed to parse YAML frontmatter in %s: %w", filePath, err)
+			}
+		}
+	}
+
+	name := strings.TrimSpace(fm.Name)
+	if name == "" {
+		name = folderName
+	}
+
+	desc := strings.TrimSpace(fm.Description)
+	if desc == "" {
+		desc = fmt.Sprintf("Skill %s", name)
+	}
+
+	return &Skill{
+		Name:        name,
+		Description: desc,
+		AlwaysLoad:  fm.AlwaysLoad,
+		Body:        body,
+		Path:        filePath,
+	}, nil
+}
+
+// DiscoverAgentSkillsMap walks <agentDir>/skills/ recursively looking for SKILL.md files according to D20.
+// Resolves directory and file symlinks and follows them, preventing infinite symlink cycles.
+// Returns:
+//   - skillsMap: map of skillName -> *Skill
+//   - onDemandSkills: sorted slice of *Skill where AlwaysLoad is false
+//   - alwaysLoadedSkills: sorted slice of *Skill where AlwaysLoad is true
+//   - shadowed: shadowing warning messages
+//   - error
+func DiscoverAgentSkillsMap(agentDir string) (map[string]*Skill, []*Skill, []*Skill, []string, error) {
+	skillsDir := filepath.Join(agentDir, SkillsDirName)
+	if !pathExists(skillsDir) {
+		return make(map[string]*Skill), nil, nil, nil, nil
+	}
+
+	skillsMap := make(map[string]*Skill)
+	skillPaths := make(map[string]string)
+	var shadowed []string
+	visitedDirs := make(map[string]bool)
+
+	var walk func(dir string) error
+	walk = func(dir string) error {
+		realDir, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return nil // Skip unresolvable symlinks
+		}
+		if visitedDirs[realDir] {
+			return nil // Cycle prevention
+		}
+		visitedDirs[realDir] = true
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			info, err := os.Stat(path)
+			if err != nil {
+				continue
+			}
+
+			if info.IsDir() {
+				if err := walk(path); err != nil {
+					return err
+				}
+			} else if strings.EqualFold(entry.Name(), SkillFileName) {
+				sk, err := ParseSkillFile(path)
+				if err != nil {
+					return err
+				}
+				if existingPath, exists := skillPaths[sk.Name]; exists {
+					shadowed = append(shadowed, fmt.Sprintf("skill %q at %s is shadowed by %s", sk.Name, existingPath, path))
+				} else {
+					skillPaths[sk.Name] = path
+					skillsMap[sk.Name] = sk
+				}
+			}
+		}
+		return nil
+	}
+
+	if err := walk(skillsDir); err != nil {
+		return nil, nil, nil, nil, err
+	}
+
+	var onDemand []*Skill
+	var alwaysLoaded []*Skill
+
+	for _, sk := range skillsMap {
+		if sk.AlwaysLoad {
+			alwaysLoaded = append(alwaysLoaded, sk)
+		} else {
+			onDemand = append(onDemand, sk)
+		}
+	}
+
+	sort.Slice(onDemand, func(i, j int) bool {
+		return onDemand[i].Name < onDemand[j].Name
+	})
+
+	sort.Slice(alwaysLoaded, func(i, j int) bool {
+		return alwaysLoaded[i].Name < alwaysLoaded[j].Name
+	})
+
+	sort.Strings(shadowed)
+	return skillsMap, onDemand, alwaysLoaded, shadowed, nil
+}
+
+// DiscoverAgentSkills walks <agentDir>/skills/ recursively looking for SKILL.md files according to D20.
+// Returns:
+//   - skillsMap: map of skillName -> *Skill
+//   - onDemandSkills: sorted slice of *Skill where AlwaysLoad is false
+//   - alwaysLoadedSkills: sorted slice of *Skill where AlwaysLoad is true
+//   - error
+func DiscoverAgentSkills(agentDir string) (map[string]*Skill, []*Skill, []*Skill, error) {
+	skillsMap, onDemand, alwaysLoaded, _, err := DiscoverAgentSkillsMap(agentDir)
+	return skillsMap, onDemand, alwaysLoaded, err
+}
+
+// RenderAutoloadedSkills formats always-loaded skills into the <AUTOLOADED_SKILLS> block.
+func RenderAutoloadedSkills(agentDir string) (string, error) {
+	_, _, alwaysLoaded, err := DiscoverAgentSkills(agentDir)
+	if err != nil || len(alwaysLoaded) == 0 {
+		return "", err
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<AUTOLOADED_SKILLS>\n")
+	for _, sk := range alwaysLoaded {
+		sb.WriteString(fmt.Sprintf("<SKILL name=%q>\n%s\n</SKILL>\n", sk.Name, sk.Body))
+	}
+	sb.WriteString("</AUTOLOADED_SKILLS>")
+	return sb.String(), nil
+}
