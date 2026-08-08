@@ -39,16 +39,18 @@ No file-editing tool, no curated command list, no task-specific scaffolding. Ask
 
 **Plain files over infrastructure.** Every piece of agent state — identity, memory, history, config, tools, skills, scratchpad — is something you can `cat`, edit by hand, `git diff`, or `symlink`. Swapping a model backend is repointing one symlink. Sharing a toolset or a skill across agents is one more symlink. Nothing here needs a server, a database, or a special editor to inspect or modify.
 
+**Every tool is a command.** There's no plugin system, no capability-registration API. Past the handful of built-ins (mostly scratchpad and skill loading), everything an agent can do is an executable linked into its `tools/` folder. Want your agent to have shell access? Link `bash`. Want it to edit text? Link `sed`. Want it to orchestrate other agents? Link `wackypub` itself back in - it's not special-cased, it's just another executable an agent happens to invoke.
+
 **Capabilities are composable primitives, not a monolith.** `run_command` is one generic tool that dispatches to anything in `tools/` — drop in any executable and it's usable, no custom schema required. Skills follow the same shape other agent harnesses already use (`SKILL.md` with YAML frontmatter), so skills written elsewhere work here with no translation. The scratchpad exists because generation is the expensive part of a token budget, not consumption — an agent can pipe one command's output directly into another's input, or fork one payload out to several downstream calls, without a single one of those bytes ever being generated or re-read by the model itself.
 
-**Trust, but verify — even for agents.** Cross-agent access is default-deny: an agent can only reach the peers explicitly listed in its own `WACKYPUB_ALLOWED_AGENTS`, and a separate call-chain mechanism refuses any cycle before it can deadlock, regardless of what an allowlist would otherwise permit. Two different concerns, two different mechanisms, neither one standing in for the other.
+**Trust, but verify — even for agents.** Cross-agent access is default-deny: an agent can only reach the peers explicitly listed in its own `WACKYPUB_ALLOWED_AGENTS`, and a separate call-chain mechanism refuses any cycle before it can deadlock, regardless of what an allowlist would otherwise permit. Two different concerns, two different mechanisms, neither one standing in for the other. And true to the "every tool is a command" point above, none of this required special-casing `wackypub` itself as a tool - the only wackypub-specific machinery anywhere in the codebase is a couple of carefully scoped environment variables carrying the authorization/cycle-detection state between invocations, not a bespoke integration.
 
 ---
 
 ## Why it's simple
 
 - An agent's entire identity and behavior lives in files you already know how to read: Markdown for prompts and memory, JSON Lines for history, JSON for config.
-- Adding a tool is dropping an executable in a folder. Adding a skill is dropping a `SKILL.md` in a folder. No registration step, no schema to hand-author.
+- Adding a tool is dropping or linking an executable in a folder. Adding a skill is dropping a `SKILL.md` in a folder. No registration step, no schema to hand-author.
 - The CLI *is* the SDK's surface — every `wackypub agent ...` subcommand has a matching `AgentSDK` Go method, so there's exactly one behavior to learn, not two.
 - Nothing about the system depends on a specific model provider. The same OpenAI-compatible adapter talks to OpenAI, OpenRouter, DeepSeek, Kimi, vLLM, Ollama, llama.cpp, or LM Studio, and reconciles their different ways of expressing reasoning/thinking content.
 
@@ -56,7 +58,8 @@ No file-editing tool, no curated command list, no task-specific scaffolding. Ask
 
 - **Agents can talk to agents, for real.** Not a scripted illusion — an agent can autonomously chain multiple calls to a peer agent within a single turn, using the peer's actual response to formulate its own follow-up, with the full exchange persisted and inspectable afterward.
 - **Data can move without ever costing tokens to move it.** Pull a large command's output into a scratchpad entry, then pipe that entry straight into three different downstream calls — the model never regenerates or re-reads the payload itself, it just references it.
-- **It's self-describing enough to actually work unattended.** A model with nothing but `--help`, tool descriptions, and a workspace has been shown, live, to explore its own environment, discover the correct invocation syntax through trial and correction, invoke a peer agent, and pipe data between two separate tool calls — all without being told the exact mechanics in advance.
+- **It's self-describing enough to actually work unattended.** A model with nothing but `--help`, tool descriptions, and a workspace has been shown, live, to explore its own environment, discover the correct invocation syntax through trial and correction, invoke a peer agent, and pipe data between two separate tool calls — all without being told the exact mechanics in advance. Skills aren't required for any of this - they're a refinement on top, for making a specific tool or task faster and more reliable to use than figuring it out cold every time, not a prerequisite for an agent doing anything at all.
+- **A session isn't locked to the model that started it.** `session.jsonl` is a plain, model-agnostic wire format - moving an agent's entire history to a different backend is repointing `runtime.json` (often just one symlink), nothing about the conversation itself has to change.
 - **Nothing here is a black box.** Every claim above has been verified by literally reading the session transcript afterward, not just trusting the summary — and the honest gaps (a `--help` ordering quirk, a lock that needed to not exist) get written down and fixed, not glossed over.
 
 ---
