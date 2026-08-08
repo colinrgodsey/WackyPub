@@ -257,14 +257,16 @@ func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
 	return RenderAgentSystemPrompt(s.WorkspaceDir, agentID)
 }
 
-// StripReasoningDetails permanently removes OpenRouter reasoning_details block
-// metadata (e.g. encrypted/signed reasoning tied to a specific backend
-// endpoint) from every turn in <ws_dir>/<agent_id>/session.jsonl, rewriting
-// the file in place. Readable plain-text reasoning is left untouched. Useful
-// when switching an agent from a model/endpoint that emits encrypted
-// reasoning to a different one. Returns the number of turns that were
-// modified.
-func (s *AgentSDK) StripReasoningDetails(agentID string) (int, error) {
+// StripSignatures permanently removes provider-specific opaque
+// reasoning/thought signatures (OpenRouter reasoning_details block metadata,
+// e.g. encrypted/signed reasoning tied to a specific backend endpoint, and
+// Gemini's ThoughtSignature field) from every turn in
+// <ws_dir>/<agent_id>/session.jsonl, rewriting the file in place. Readable
+// plain-text reasoning is left untouched. Useful when switching an agent from
+// one model/provider to another, since a replayed signature from the old
+// provider is rejected outright by the new one. Returns the number of turns
+// that were modified.
+func (s *AgentSDK) StripSignatures(agentID string) (int, error) {
 	if agentID == "" {
 		return 0, fmt.Errorf("agentID cannot be empty")
 	}
@@ -282,7 +284,7 @@ func (s *AgentSDK) StripReasoningDetails(agentID string) (int, error) {
 	}
 	defer lock.Release()
 
-	return StripSessionReasoningDetails(agentDir)
+	return StripSessionSignatures(agentDir)
 }
 
 // CompactSession manually triggers session compaction evaluation for an agent.

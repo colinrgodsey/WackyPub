@@ -61,4 +61,4 @@ require (
 	rsc.io/ordered v1.1.1 // indirect
 )
 
-replace github.com/achetronic/adk-utils-go => github.com/colinrgodsey/adk-utils-go v0.0.0-20260806173323-ee4a5294d39c
+replace github.com/achetronic/adk-utils-go => github.com/colinrgodsey/adk-utils-go v0.0.0-20260807233702-5d5466b0a72c

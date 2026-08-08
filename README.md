@@ -1,6 +1,6 @@
 # 🎭 WackyPub
 
-A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a plain file, and the same command interface an agent uses to explore its own tools is the one you use from your terminal.
+A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal.
 
 ---
 

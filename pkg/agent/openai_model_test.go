@@ -25,16 +25,16 @@ func reasoningDetailPart(text string, extra map[string]any) *genai.Part {
 	}
 }
 
-func TestStripReasoningDetails(t *testing.T) {
+func TestStripSignatures(t *testing.T) {
 	t.Run("nil content", func(t *testing.T) {
-		if got := StripReasoningDetails(nil); got != nil {
+		if got := StripSignatures(nil); got != nil {
 			t.Errorf("expected nil, got %+v", got)
 		}
 	})
 
-	t.Run("no reasoning_detail metadata: returned unchanged", func(t *testing.T) {
+	t.Run("no signature: returned unchanged", func(t *testing.T) {
 		c := &genai.Content{Role: "model", Parts: []*genai.Part{{Text: "plain answer"}}}
-		got := StripReasoningDetails(c)
+		got := StripSignatures(c)
 		if got != c {
 			t.Errorf("expected the same pointer back when nothing needs stripping")
 		}
@@ -48,7 +48,7 @@ func TestStripReasoningDetails(t *testing.T) {
 				{Text: "final answer"},
 			},
 		}
-		got := StripReasoningDetails(c)
+		got := StripSignatures(c)
 		if len(got.Parts) != 2 {
 			t.Fatalf("expected 2 parts, got %d", len(got.Parts))
 		}
@@ -69,7 +69,7 @@ func TestStripReasoningDetails(t *testing.T) {
 			PartMetadata: map[string]any{"openai.reasoning_detail": map[string]any{"type": "reasoning.encrypted", "data": "opaque"}},
 		}
 		c := &genai.Content{Role: "model", Parts: []*genai.Part{encrypted, {Text: "final answer"}}}
-		got := StripReasoningDetails(c)
+		got := StripSignatures(c)
 		if len(got.Parts) != 1 {
 			t.Fatalf("expected the text-less encrypted part to be dropped, got %d parts: %+v", len(got.Parts), got.Parts)
 		}
@@ -82,7 +82,7 @@ func TestStripReasoningDetails(t *testing.T) {
 		p := reasoningDetailPart("summary", nil)
 		p.PartMetadata["some.other.key"] = "keep me"
 		c := &genai.Content{Role: "model", Parts: []*genai.Part{p}}
-		got := StripReasoningDetails(c)
+		got := StripSignatures(c)
 		if got.Parts[0].PartMetadata["openai.reasoning_detail"] != nil {
 			t.Errorf("expected reasoning_detail key removed")
 		}
@@ -90,9 +90,45 @@ func TestStripReasoningDetails(t *testing.T) {
 			t.Errorf("expected unrelated metadata key preserved, got %+v", got.Parts[0].PartMetadata)
 		}
 	})
+
+	t.Run("Gemini ThoughtSignature: stripped, readable text kept", func(t *testing.T) {
+		c := &genai.Content{
+			Role: "model",
+			Parts: []*genai.Part{
+				{Text: "final answer", ThoughtSignature: []byte("opaque-gemini-blob")},
+			},
+		}
+		got := StripSignatures(c)
+		if len(got.Parts) != 1 {
+			t.Fatalf("expected 1 part, got %d", len(got.Parts))
+		}
+		if got.Parts[0].Text != "final answer" {
+			t.Errorf("expected text kept: %+v", got.Parts[0])
+		}
+		if len(got.Parts[0].ThoughtSignature) != 0 {
+			t.Errorf("expected ThoughtSignature stripped, got %v", got.Parts[0].ThoughtSignature)
+		}
+	})
+
+	t.Run("text-less ThoughtSignature-only part: dropped entirely", func(t *testing.T) {
+		c := &genai.Content{
+			Role: "model",
+			Parts: []*genai.Part{
+				{Thought: true, ThoughtSignature: []byte("opaque-gemini-blob")},
+				{Text: "final answer"},
+			},
+		}
+		got := StripSignatures(c)
+		if len(got.Parts) != 1 {
+			t.Fatalf("expected the text-less part to be dropped, got %d parts: %+v", len(got.Parts), got.Parts)
+		}
+		if got.Parts[0].Text != "final answer" {
+			t.Errorf("expected the remaining part to be the final answer: %+v", got.Parts[0])
+		}
+	})
 }
 
-func TestStripSessionReasoningDetails(t *testing.T) {
+func TestStripSessionSignatures(t *testing.T) {
 	tempDir := t.TempDir()
 
 	turns := []*genai.Content{
@@ -105,9 +141,9 @@ func TestStripSessionReasoningDetails(t *testing.T) {
 		t.Fatalf("failed to write session turns: %v", err)
 	}
 
-	modified, err := StripSessionReasoningDetails(tempDir)
+	modified, err := StripSessionSignatures(tempDir)
 	if err != nil {
-		t.Fatalf("StripSessionReasoningDetails failed: %v", err)
+		t.Fatalf("StripSessionSignatures failed: %v", err)
 	}
 	if modified != 1 {
 		t.Errorf("expected 1 turn modified, got %d", modified)
@@ -131,15 +167,15 @@ func TestStripSessionReasoningDetails(t *testing.T) {
 		t.Errorf("expected readable answer text preserved, got %q", ContentText(reread[1]))
 	}
 
-	t.Run("no-op when nothing has reasoning_details", func(t *testing.T) {
+	t.Run("no-op when nothing has signatures", func(t *testing.T) {
 		cleanDir := t.TempDir()
 		clean := []*genai.Content{genai.NewContentFromText("hi", "user"), genai.NewContentFromText("hello", "model")}
 		if err := WriteSessionTurns(cleanDir, clean); err != nil {
 			t.Fatalf("failed to write session turns: %v", err)
 		}
-		modified, err := StripSessionReasoningDetails(cleanDir)
+		modified, err := StripSessionSignatures(cleanDir)
 		if err != nil {
-			t.Fatalf("StripSessionReasoningDetails failed: %v", err)
+			t.Fatalf("StripSessionSignatures failed: %v", err)
 		}
 		if modified != 0 {
 			t.Errorf("expected 0 turns modified, got %d", modified)

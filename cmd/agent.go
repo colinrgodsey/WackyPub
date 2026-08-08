@@ -148,21 +148,23 @@ Acquires the session lock for the duration of the operation.`,
 	},
 }
 
-// wackypub agent <agent_id> strip-reasoning OR wackypub agent strip-reasoning <agent_id>
-var agentStripReasoningCmd = &cobra.Command{
-	Use:   "strip-reasoning [agent_id]",
-	Short: "Permanently remove OpenRouter reasoning_details block metadata from an agent's session.jsonl",
-	Long: `Permanently removes OpenRouter's structured reasoning_details block metadata (including
-encrypted/signed reasoning tied to a specific backend endpoint) from every turn in
+// wackypub agent <agent_id> strip-signatures OR wackypub agent strip-signatures <agent_id>
+var agentStripSignaturesCmd = &cobra.Command{
+	Use:   "strip-signatures [agent_id]",
+	Short: "Permanently remove provider-specific opaque reasoning/thought signatures from an agent's session.jsonl",
+	Long: `Permanently removes provider-specific opaque reasoning/thought signatures - OpenRouter's
+structured reasoning_details block metadata (including encrypted/signed reasoning tied to a
+specific backend endpoint) and Gemini's ThoughtSignature field - from every turn in
 <ws_dir>/<agent_id>/session.jsonl, rewriting the file in place. Readable plain-text reasoning
 is left untouched.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
-Useful when switching an agent from a model/endpoint that emits encrypted reasoning (e.g.
-OpenRouter routing to an OpenAI model) to a different one - old encrypted blocks would
-otherwise be rejected if ever replayed to a backend that didn't produce them.
+Useful when switching an agent from one model/provider to another - a signature issued by
+the old provider means nothing to the new one and gets the request rejected outright if
+replayed (e.g. Anthropic 400s with "Invalid ` + "`signature`" + ` in ` + "`thinking`" + ` block" when it receives
+a Gemini ThoughtSignature carried over from an earlier session).
 
 Prints the number of turns that were modified. Acquires the session lock for the duration of
 the rewrite.`,
@@ -179,15 +181,15 @@ the rewrite.`,
 		}
 
 		if agentID == "" {
-			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-reasoning")
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> strip-signatures")
 		}
 
-		modified, err := sdk.StripReasoningDetails(agentID)
+		modified, err := sdk.StripSignatures(agentID)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Stripped reasoning_details metadata from %d turn(s) in agent %q session (%s/session.jsonl).\n", modified, agentID, sdk.AgentDir(agentID))
+		fmt.Printf("Stripped provider signatures from %d turn(s) in agent %q session (%s/session.jsonl).\n", modified, agentID, sdk.AgentDir(agentID))
 		return nil
 	},
 }
@@ -447,8 +449,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				remainingArgs = append(remainingArgs, args[2:]...)
 			}
 			return agentPromptCmd.RunE(cmd, remainingArgs)
-		} else if subCmd == "strip-reasoning" {
-			return agentStripReasoningCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "strip-signatures" {
+			return agentStripSignaturesCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "read-session" {
 			return agentReadSessionCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "read-memory" {
@@ -475,7 +477,7 @@ func init() {
 	agentCmd.AddCommand(agentAddCmd)
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
-	agentCmd.AddCommand(agentStripReasoningCmd)
+	agentCmd.AddCommand(agentStripSignaturesCmd)
 	agentCmd.AddCommand(agentReadSessionCmd)
 	agentCmd.AddCommand(agentReadMemoryCmd)
 	agentCmd.AddCommand(agentRenderPromptCmd)

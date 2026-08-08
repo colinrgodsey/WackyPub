@@ -1,0 +1,10 @@
+{
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "apiKey": "",
+  "sessionCompactPct": 50.0,
+  "contextWindow": 200000,
+
+  "anthropicThinkingMode": "adaptive",
+  "anthropicThinkingEffort": "medium"
+}

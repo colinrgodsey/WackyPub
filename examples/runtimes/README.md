@@ -20,12 +20,24 @@ an agent's config).
   Update `endpoint`/`model` to match your actual server. No reasoning
   fields set - add `reasoningField`/`supportsReasoningDetails` if your
   server's chat template actually emits structured reasoning.
+- **`gemini-flash.json`** - Native Gemini (`"provider": "gemini"`), no
+  `endpoint` needed. Uses `geminiThinkingLevel` (mutually exclusive with
+  `geminiThinkingBudget` - Gemini's API rejects a request setting both,
+  see `.agents/DECISIONS.md` D21) plus `geminiIncludeThoughts` to get
+  readable reasoning text back instead of just a thought signature.
+- **`anthropic-sonnet.json`** - Native Anthropic (`"provider": "anthropic"`),
+  no `endpoint` needed. Uses `anthropicThinkingMode: "adaptive"` (the
+  effort-based reasoning API) paired with `anthropicThinkingEffort` - the
+  `"enabled"` classic mode instead takes `anthropicThinkingBudgetTokens`,
+  see D21.
 
 Both OpenRouter examples set `extraBody.reasoning.effort: "high"` - an
 OpenRouter-specific passthrough field, not something WackyPubAI interprets
 itself. Swap the model string for any other OpenRouter-hosted model and
 this still applies.
 
-More examples will be added here as more backends/providers gain explicit
-support (see `.agents/TODOS.md` for native Gemini and Anthropic runtime
-support, currently deferred).
+All five configs here have been verified against their real backend (see
+`.agents/DECISIONS.md` D21 and `.agents/LOCAL_TESTING.md`). If you switch an
+existing agent between providers, run `wackypub agent <id> strip-signatures`
+first - reasoning signatures are provider-specific and get rejected outright
+if replayed to a different provider than the one that issued them.

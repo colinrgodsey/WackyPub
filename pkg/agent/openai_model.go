@@ -77,8 +77,15 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 	})
 }
 
-// StripReasoningDetails returns a copy of c with adk-utils-go's OpenRouter
-// reasoning_details block metadata removed from every part.
+// StripSignatures returns a copy of c with provider-specific opaque
+// reasoning/thought signatures removed from every part: adk-utils-go's
+// OpenRouter reasoning_details block metadata, and Gemini's ThoughtSignature
+// field. Both are opaque blobs a specific backend issues to let its own
+// thinking be replayed in a later request; neither means anything to a
+// different provider, and replaying one to the wrong provider gets the
+// request rejected outright (confirmed live: an Anthropic request 400s with
+// "Invalid `signature` in `thinking` block" when it receives a Gemini
+// ThoughtSignature carried over from an earlier session).
 //
 // Ingest captures reasoning_details blocks unconditionally, regardless of
 // SupportsReasoningDetails — so a block (including an opaque encrypted one
@@ -91,11 +98,10 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 // endpoint-pinning issue). Callers should apply this before persisting a
 // turn when RuntimeConfig.SupportsReasoningDetails is false.
 //
-// A thought Part that carries nothing but a block (no readable text) is
-// dropped entirely once its metadata is stripped, since nothing would remain
-// to preserve.
-func StripReasoningDetails(c *genai.Content) *genai.Content {
-	if c == nil || !contentHasReasoningDetails(c) {
+// A thought Part that carries nothing but a signature (no readable text) is
+// dropped entirely once stripped, since nothing would remain to preserve.
+func StripSignatures(c *genai.Content) *genai.Content {
+	if c == nil || !contentHasSignatures(c) {
 		return c
 	}
 
@@ -104,12 +110,13 @@ func StripReasoningDetails(c *genai.Content) *genai.Content {
 		if p == nil {
 			continue
 		}
-		if !partHasReasoningDetail(p) {
+		if !partHasSignature(p) {
 			parts = append(parts, p)
 			continue
 		}
 
 		clone := *p
+		clone.ThoughtSignature = nil
 		clone.PartMetadata = nil
 		for k, v := range p.PartMetadata {
 			if k == adkopenai.ReasoningDetailMetadataKey {
@@ -129,45 +136,55 @@ func StripReasoningDetails(c *genai.Content) *genai.Content {
 	return &genai.Content{Role: c.Role, Parts: parts}
 }
 
-// partHasReasoningDetail reports whether p carries adk-utils-go's OpenRouter
-// reasoning_details block metadata.
-func partHasReasoningDetail(p *genai.Part) bool {
-	if p == nil || p.PartMetadata == nil {
+// partHasSignature reports whether p carries a provider-specific opaque
+// reasoning/thought signature: adk-utils-go's OpenRouter reasoning_details
+// block metadata, or Gemini's ThoughtSignature field.
+func partHasSignature(p *genai.Part) bool {
+	if p == nil {
+		return false
+	}
+	if len(p.ThoughtSignature) > 0 {
+		return true
+	}
+	if p.PartMetadata == nil {
 		return false
 	}
 	_, ok := p.PartMetadata[adkopenai.ReasoningDetailMetadataKey]
 	return ok
 }
 
-// contentHasReasoningDetails reports whether any part of c carries
-// reasoning_details block metadata.
-func contentHasReasoningDetails(c *genai.Content) bool {
+// contentHasSignatures reports whether any part of c carries a
+// provider-specific opaque reasoning/thought signature.
+func contentHasSignatures(c *genai.Content) bool {
 	if c == nil {
 		return false
 	}
 	for _, p := range c.Parts {
-		if partHasReasoningDetail(p) {
+		if partHasSignature(p) {
 			return true
 		}
 	}
 	return false
 }
 
-// StripSessionReasoningDetails rewrites <agentDir>/session.jsonl in place,
-// removing OpenRouter reasoning_details block metadata (including
-// encrypted/signed reasoning tied to a specific backend endpoint — see
-// StripReasoningDetails) from every turn. Readable plain-text reasoning
-// (Thought parts with text) is left untouched.
+// StripSessionSignatures rewrites <agentDir>/session.jsonl in place,
+// removing provider-specific opaque reasoning/thought signatures (OpenRouter
+// reasoning_details block metadata and Gemini's ThoughtSignature field — see
+// StripSignatures) from every turn. Readable plain-text reasoning (Thought
+// parts with text) is left untouched.
 //
-// Useful when permanently moving an agent off a model/endpoint that emitted
-// encrypted reasoning blocks: those blocks would otherwise sit in
-// session.jsonl as a landmine if SupportsReasoningDetails is ever turned back
-// on for a different backend that can't decrypt them (see
-// ADK_UTILS_GO_REASONING_EGRESS_BUG.md).
+// Useful when permanently moving an agent off a model/provider that emitted
+// signed reasoning: those signatures would otherwise sit in session.jsonl as
+// a landmine, either as a stale, unreplayable blob if SupportsReasoningDetails
+// is toggled back on for a different backend that can't decrypt them (see
+// ADK_UTILS_GO_REASONING_EGRESS_BUG.md), or - as confirmed live - an outright
+// 400 the moment a session carrying another provider's thought signatures is
+// replayed against a new provider (e.g. switching an agent's runtime.json
+// from Gemini to Anthropic).
 //
 // Returns the number of turns that were actually modified. Does not acquire
-// the session lock; callers must hold it (see AgentSDK.StripReasoningDetails).
-func StripSessionReasoningDetails(agentDir string) (int, error) {
+// the session lock; callers must hold it (see AgentSDK.StripSignatures).
+func StripSessionSignatures(agentDir string) (int, error) {
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		return 0, err
@@ -176,10 +193,10 @@ func StripSessionReasoningDetails(agentDir string) (int, error) {
 	modified := 0
 	stripped := make([]*genai.Content, len(turns))
 	for i, t := range turns {
-		if contentHasReasoningDetails(t) {
+		if contentHasSignatures(t) {
 			modified++
 		}
-		stripped[i] = StripReasoningDetails(t)
+		stripped[i] = StripSignatures(t)
 	}
 
 	if modified == 0 {
