@@ -20,7 +20,10 @@ func TestExecuteTool(t *testing.T) {
 		Args: []string{"hello"},
 		Env:  map[string]string{"TEST_VAR": "world"},
 	}
-	output := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args)
+	output, err := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(output, "Arg1: hello, Env: world") {
 		t.Fatalf("unexpected tool output: %q", output)
@@ -35,10 +38,13 @@ func TestExecuteTool_Failure(t *testing.T) {
 		t.Fatalf("failed to write fail tool script: %v", err)
 	}
 
-	output := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{})
+	_, err := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{})
 
-	if !strings.Contains(output, "Error executing tool fail_tool.sh: something broke") {
-		t.Fatalf("unexpected fail output: %q", output)
+	if err == nil {
+		t.Fatalf("expected an error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool fail_tool.sh failed: something broke") {
+		t.Fatalf("unexpected error message: %q", err.Error())
 	}
 }
 
@@ -145,7 +151,10 @@ func TestExecuteTool_RelativePath(t *testing.T) {
 		t.Fatalf("failed to write tool.sh: %v", err)
 	}
 
-	out := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, ExecToolArgs{})
+	out, err := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, ExecToolArgs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !strings.Contains(out, "relative_ok") {
 		t.Fatalf("expected 'relative_ok', got: %q", out)
 	}

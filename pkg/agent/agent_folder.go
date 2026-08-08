@@ -69,7 +69,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	}, func(ctx agent.Context, args SetScratchpadArgs) (SetScratchpadResult, error) {
 		out, err := SetScratchpad(agentDir, args.ID, args.Text)
 		if err != nil {
-			return SetScratchpadResult{Output: fmt.Sprintf("Error setting scratchpad %d: %v", args.ID, err)}, nil
+			return SetScratchpadResult{}, fmt.Errorf("failed to set scratchpad %d: %w", args.ID, err)
 		}
 		return SetScratchpadResult{Output: out}, nil
 	})
@@ -85,7 +85,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	}, func(ctx agent.Context, args GetScratchpadArgs) (GetScratchpadResult, error) {
 		out, err := GetScratchpad(agentDir, args.ID)
 		if err != nil {
-			return GetScratchpadResult{Output: fmt.Sprintf("Error reading scratchpad %d: %v", args.ID, err)}, nil
+			return GetScratchpadResult{}, fmt.Errorf("failed to read scratchpad %d: %w", args.ID, err)
 		}
 		return GetScratchpadResult{Output: out}, nil
 	})
@@ -108,7 +108,10 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 			Name:        toolName,
 			Description: fmt.Sprintf("Command %s", toolName),
 		}, func(ctx agent.Context, args ExecToolArgs) (ExecToolResult, error) {
-			out := executeTool(ctx, agentDir, toolName, toolPath, args)
+			out, err := executeTool(ctx, agentDir, toolName, toolPath, args)
+			if err != nil {
+				return ExecToolResult{}, err
+			}
 			return ExecToolResult{Output: out}, nil
 		})
 		if err != nil {
@@ -248,7 +251,7 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	return finalResponse, nil
 }
 
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) string {
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) (string, error) {
 	cmdArgs := args.Args
 
 	absToolPath, err := filepath.Abs(toolPath)
@@ -289,23 +292,23 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		if errStr == "" {
 			errStr = err.Error()
 		}
-		return fmt.Sprintf("Error executing tool %s: %s", toolName, errStr)
+		return "", fmt.Errorf("tool %s failed: %s", toolName, errStr)
 	}
 
 	out := stdout.String()
 	if args.StdoutScratchpadID != nil {
 		summary, err := SetScratchpad(agentDir, *args.StdoutScratchpadID, out)
 		if err != nil {
-			return fmt.Sprintf("Error writing output to scratchpad %d: %v", *args.StdoutScratchpadID, err)
+			return "", fmt.Errorf("failed to write output to scratchpad %d: %w", *args.StdoutScratchpadID, err)
 		}
-		return summary
+		return summary, nil
 	}
 
 	out = strings.TrimSpace(out)
 	if out == "" {
 		out = "Command completed with no output."
 	}
-	return out
+	return out, nil
 }
 
 // Helper to run ADK runner session for folder agent

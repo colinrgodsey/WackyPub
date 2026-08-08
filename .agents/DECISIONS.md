@@ -385,7 +385,12 @@ substitute for the other.
 - `GenerateTurn` executes in a loop: after receiving tool calls and appending tool responses, it invokes the model again until the model returns a text response (no function calls) or the maximum tool turns limit is reached.
 - Default max tool turns is 10 per `GenerateTurn` invocation, configurable via the persistent `--max-tool-turns` CLI flag.
 
-**Why**: A uniform `{args: []string, env: map[string]string}` schema allows arbitrary CLI tool binaries under `tools/` to be invoked natively as subprocesses without requiring every tool to author custom schema metadata parser extensions, keeping discovery fast and compatible with any shell command.
+**Tool Error Signaling**:
+- `executeTool` returns `(string, error)`, not just a formatted string. A non-zero exit, a missing binary, or a scratchpad read/write failure surfaces as a real Go `error`.
+- Every `functiontool.New` handler (`set_scratchpad`, `get_scratchpad`, and each discovered tool) propagates that error as its own return value instead of packing failure text into a normal-looking result and always returning `nil`.
+- Google ADK's own tool dispatch (`internal/llminternal/base_flow.go`) turns a non-nil handler error into a `FunctionResponse.Response` shaped as `{"error": "<message>"}`, structurally distinct from the `{"output": "..."}` shape a successful call produces - no extra callback wiring required on our side.
+
+**Why**: A uniform `{args: []string, env: map[string]string}` schema allows arbitrary CLI tool binaries under `tools/` to be invoked natively as subprocesses without requiring every tool to author custom schema metadata parser extensions, keeping discovery fast and compatible with any shell command. Error signaling matters because a model can only react differently to a tool failure if the failure looks different on the wire - previously, `"Error executing tool X: ..."` was just prose living in the same `output` field a successful call would use, so recognizing a failure depended entirely on the model reading it as English rather than on any structural signal.
 
 ## D18: Persistent Scratchpad tools and command I/O redirection
 
@@ -413,6 +418,9 @@ Agent generation turns migrate from manual `model.LLMRequest` construction to Go
 **In-Memory Event List Synchronization**:
 - `FileSessionService.AppendEvent` appends new events (`evt`) directly to the in-memory `fileSession.events` list in addition to writing to `session.jsonl` on disk.
 - Ensures subsequent iterations within a multi-turn tool execution loop read live assistant tool calls and user tool response events from `sess.Events()` rather than a frozen snapshot.
+
+**Event Author**:
+- `FileSessionService.Get()` sets `evt.Author` to the actual agent id for model-role turns and `"user"` for user-role turns, not the raw `genai.Content.Role` string. ADK's runner expects `Author` to be a real participant identifier and logs "Event from an unknown agent" warnings (spamming the console on every turn of loaded history) if it's just handed the literal string `"model"`.
 
 **System Prompt & Persistent Memory Layout**:
 - Rendered `AGENTS.md` is passed directly as `Instruction` on `llmagent.Config` (ADK's native system prompt).

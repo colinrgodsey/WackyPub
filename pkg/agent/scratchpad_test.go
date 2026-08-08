@@ -59,7 +59,10 @@ func TestExecuteTool_ScratchpadRedirection(t *testing.T) {
 		StdoutScratchpadID: &stdoutID,
 	}
 
-	summary := executeTool(context.Background(), agentDir, "pipe_tool.sh", toolPath, args)
+	summary, err := executeTool(context.Background(), agentDir, "pipe_tool.sh", toolPath, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !strings.Contains(summary, "Scratchpad 20 updated") {
 		t.Fatalf("unexpected summary: %q", summary)
 	}
