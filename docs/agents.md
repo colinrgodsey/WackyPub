@@ -200,7 +200,7 @@ You are Ignis, an ancient wizard.
 
 ## 4. Google ADK Integration Layer
 
-WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.org/adk/v2`) for its core types (`model.LLM`, `model.LLMRequest`/`LLMResponse`, `agent.Agent`, `session.Event`), but the primary `generate`/`prompt` CLI path talks to the model directly rather than routing through ADK's `LLMAgent`/`Runner` machinery — `FolderAgent.GenerateTurn` (`pkg/agent/agent_folder.go`) builds the `model.LLMRequest` by hand (system prompt + memory folded into the first turn, plus `session.jsonl` history) and calls `model.LLM.GenerateContent` directly:
+WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.org/adk/v2`) for core types (`model.LLM`, `model.LLMRequest`/`LLMResponse`, `agent.Agent`, `session.Event`, `tool.Tool`), and executes generation turns directly via ADK's `runner.Runner` powered by a custom file-backed `session.Service` (`FileSessionService` in `pkg/agent/file_session_service.go`).
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -210,7 +210,7 @@ WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.o
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
 │         FolderAgent.GenerateTurn (pkg/agent/agent_folder.go) │
-│   builds model.LLMRequest by hand, calls model.LLM directly  │
+│    runs ADK runner.Runner with custom FileSessionService    │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
@@ -227,7 +227,7 @@ WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.o
 └─────────────────────────────────────────────────────────────┘
 ```
 
-A separate `BuildADKAgent`/`llmagent.New` construction (`pkg/agent/adk_agent.go`) and `FolderAgent.RunWithRunner` (using ADK's `runner.Run`) exist as an alternate entry point for orchestrating through ADK's actual `LLMAgent`/`Runner` pipeline — this path is not used by the `generate`/`prompt` CLI commands today.
+Agent generation turns are executed using ADK's `runner.Runner` pipeline with `FileSessionService` handling reading and appending session history directly to `<agent_id>/session.jsonl`.
 
 ### OpenAI Adapter: `github.com/colinrgodsey/adk-utils-go` Fork
 

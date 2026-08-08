@@ -16,9 +16,9 @@ func TestExecuteTool(t *testing.T) {
 		t.Fatalf("failed to write tool script: %v", err)
 	}
 
-	args := map[string]any{
-		"args": []any{"hello"},
-		"env":  map[string]any{"TEST_VAR": "world"},
+	args := ExecToolArgs{
+		Args: []string{"hello"},
+		Env:  map[string]string{"TEST_VAR": "world"},
 	}
 	output := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args)
 
@@ -35,10 +35,44 @@ func TestExecuteTool_Failure(t *testing.T) {
 		t.Fatalf("failed to write fail tool script: %v", err)
 	}
 
-	output := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, nil)
+	output := executeTool(context.Background(), agentDir, "fail_tool.sh", toolPath, ExecToolArgs{})
 
 	if !strings.Contains(output, "Error executing tool fail_tool.sh: something broke") {
 		t.Fatalf("unexpected fail output: %q", output)
+	}
+}
+
+func TestBuildFolderAgentTools(t *testing.T) {
+	agentDir := t.TempDir()
+	toolsDir := filepath.Join(agentDir, "tools")
+	if err := os.MkdirAll(toolsDir, 0755); err != nil {
+		t.Fatalf("failed to create tools dir: %v", err)
+	}
+	shPath := filepath.Join(toolsDir, "custom.sh")
+	if err := os.WriteFile(shPath, []byte("#!/bin/sh\necho custom_out"), 0755); err != nil {
+		t.Fatalf("failed to write custom.sh: %v", err)
+	}
+
+	toolMap, decls, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+
+	// Should contain set_scratchpad, get_scratchpad, custom.sh
+	if len(toolMap) != 3 {
+		t.Errorf("expected 3 tools, got %d", len(toolMap))
+	}
+	if len(decls) != 3 {
+		t.Errorf("expected 3 decls, got %d", len(decls))
+	}
+	if _, ok := toolMap["set_scratchpad"]; !ok {
+		t.Errorf("missing set_scratchpad in toolMap")
+	}
+	if _, ok := toolMap["get_scratchpad"]; !ok {
+		t.Errorf("missing get_scratchpad in toolMap")
+	}
+	if _, ok := toolMap["custom.sh"]; !ok {
+		t.Errorf("missing custom.sh in toolMap")
 	}
 }
 
@@ -111,7 +145,7 @@ func TestExecuteTool_RelativePath(t *testing.T) {
 		t.Fatalf("failed to write tool.sh: %v", err)
 	}
 
-	out := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, nil)
+	out := executeTool(context.Background(), relAgentDir, "tool.sh", toolPath, ExecToolArgs{})
 	if !strings.Contains(out, "relative_ok") {
 		t.Fatalf("expected 'relative_ok', got: %q", out)
 	}

@@ -9,6 +9,7 @@ import (
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/model/gemini"
 	"google.golang.org/adk/v2/session"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -32,13 +33,29 @@ func CreateGeminiModel(ctx context.Context, modelName string, apiKey string) (mo
 }
 
 // BuildADKAgent constructs a Google ADK LLMAgent for an agent directory.
-// Name is agentID (unique within workspace), Instruction is the fully rendered system prompt (e.g. from AGENTS.md).
-func BuildADKAgent(agentID string, renderedPrompt string, llmModel model.LLM) (agent.Agent, error) {
+// Name is agentID (unique within workspace), renderedPrompt is AGENTS.md system prompt, maxToolTurns caps tool executions.
+func BuildADKAgent(agentID string, renderedPrompt string, maxToolTurns int, llmModel model.LLM, tools ...tool.Tool) (agent.Agent, error) {
+	if maxToolTurns <= 0 {
+		maxToolTurns = 10
+	}
+	var modelCalls int
+
 	cfg := llmagent.Config{
 		Name:        agentID,
 		Description: fmt.Sprintf("Agent %s", agentID),
 		Instruction: renderedPrompt,
 		Model:       llmModel,
+		Tools:       tools,
+		BeforeModelCallbacks: []llmagent.BeforeModelCallback{
+			func(ctx agent.Context, req *model.LLMRequest) (*model.LLMResponse, error) {
+				modelCalls++
+				// First model call is initial prompt; subsequent model calls are tool loop turns
+				if modelCalls > maxToolTurns+1 {
+					return nil, fmt.Errorf("exceeded maximum tool turns limit (%d)", maxToolTurns)
+				}
+				return nil, nil
+			},
+		},
 	}
 
 	ag, err := llmagent.New(cfg)

@@ -369,11 +369,9 @@ substitute for the other.
 `<agent_dir>/tools/` executables discovered per D14 are registered as LLM function declarations on each generation request.
 
 **Tool Schema Registration**:
-- Each executable discovered in `tools/` is registered as a `genai.FunctionDeclaration` with `Name` matching the executable's basename.
-- `Description` defaults to `"Command <Name>"`.
-- `Parameters` defines a standard schema accepting:
-  - `"args"`: an array of string CLI command line arguments passed positionally to the tool.
-  - `"env"`: an object map of key-value environment variables set for the tool invocation.
+- Executable tools in `tools/` and built-in tools (`set_scratchpad`, `get_scratchpad`) are constructed as Google ADK `tool.Tool` instances using `google.golang.org/adk/v2/tool/functiontool.New`.
+- Strongly typed Go structs (`SetScratchpadArgs`, `GetScratchpadArgs`, `ExecToolArgs`) automatically generate their `genai.FunctionDeclaration` schemas and handle JSON argument unmarshaling and type validation.
+- Executable tool function declarations match the executable's basename with `Description` defaulting to `"Command <Name>"`.
 
 **Tool Execution Protocol**:
 - When the model returns a `FunctionCall` part for a tool `X`:
@@ -403,6 +401,36 @@ Executable tool declarations in `<agent_dir>/tools/` include optional integer pr
 - `stdout_scratchpad_id`: if set, `executeTool` writes the subprocess `Stdout` output into `scratchpad[stdout_scratchpad_id]` and returns a summary message (`"Scratchpad <id> updated (N bytes)"`) instead of placing large output directly into the conversation turn.
 
 **Why**: Passing large command outputs directly through session history inflates model context budgets and token costs. A persistent session-scoped scratchpad allows tools to pipe large payloads to one another or store outputs by integer ID without polluting prompt history.
+
+## D19: Folder agents migrate to Google ADK `runner.Runner` backed by `FileSessionService`
+
+Agent generation turns migrate from manual `model.LLMRequest` construction to Google ADK's `runner.Runner` engine, backed by a custom `FileSessionService` (`pkg/agent/file_session_service.go`).
+
+**FileSessionService & Storage Compatibility**:
+- Implements ADK's `session.Service` interface (`Create`, `Get`, `List`, `Delete`, `AppendEvent`).
+- Reads and writes serialized `genai.Content` objects directly from/to `<agent_dir>/session.jsonl` under the session lock, preserving 100% backward compatibility with existing agent sessions and file formats.
+
+**In-Memory Event List Synchronization**:
+- `FileSessionService.AppendEvent` appends new events (`evt`) directly to the in-memory `fileSession.events` list in addition to writing to `session.jsonl` on disk.
+- Ensures subsequent iterations within a multi-turn tool execution loop read live assistant tool calls and user tool response events from `sess.Events()` rather than a frozen snapshot.
+
+**System Prompt & Persistent Memory Layout**:
+- Rendered `AGENTS.md` is passed directly as `Instruction` on `llmagent.Config` (ADK's native system prompt).
+- `FileSessionService.Get()` formats `MEMORY.md` (`<PERSISTENT_MEMORY>`) as User Turn 1 without prepending `AGENTS.md`, eliminating duplicate system prompt messages.
+- Consecutive user turns are merged (`MergeConsecutiveUserTurns`) to ensure prompt cache consistency and model template compatibility.
+
+**Runner Execution & User Turn Handling**:
+- `GenerateTurn` passes `msg = nil` into `r.Run(ctx, "user", agentID, nil, ...)` because user turns are already loaded from disk via `SessionService.Get()`. This prevents duplicate user turn appending.
+
+**Tool Loop Termination & `--max-tool-turns` Cap**:
+- `LoadFolderAgent` accepts `maxToolTurns int` (defaulting to 10 if <= 0) and threads it to `BuildADKAgent` at agent construction time.
+- `AgentSDK` passes `s.MaxToolTurns` into `LoadFolderAgent`, binding the CLI flag `--max-tool-turns` directly to `llmagent.Config`'s `BeforeModelCallbacks`.
+- When consecutive tool loop requests exceed `maxToolTurns`, `BeforeModelCallback` skips the model call and returns `"exceeded maximum tool turns limit (%d)"`.
+
+**Compaction**:
+- Compaction remains single-shot via `CheckAndCompactSession` before generation runs.
+
+**Why**: Using ADK's `runner.Runner` and `session.Service` standardizes agent execution on official Google ADK primitives while preserving full filesystem control, multi-turn tool loop fidelity, and `session.jsonl` compatibility.
 
 
 

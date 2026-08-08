@@ -81,12 +81,9 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
-	}
-	if s.MaxToolTurns > 0 {
-		fa.MaxToolTurns = s.MaxToolTurns
 	}
 
 	resp, err := fa.GenerateTurn(ctx)
@@ -129,12 +126,9 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	}
 
 	// 2. Load Folder Agent & Generate Assistant Turn
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
-	}
-	if s.MaxToolTurns > 0 {
-		fa.MaxToolTurns = s.MaxToolTurns
 	}
 
 	resp, err := fa.GenerateTurn(ctx)
@@ -153,7 +147,7 @@ func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
 	}
 	defer cleanup()
 
-	return LoadFolderAgent(s.WorkspaceDir, agentID)
+	return LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
 }
 
 // ListAgents returns the IDs of agent directories found directly under the
@@ -314,7 +308,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string) (bool, er
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
 	if err != nil {
 		return false, err
 	}

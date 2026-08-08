@@ -52,9 +52,11 @@ func TestExecuteTool_ScratchpadRedirection(t *testing.T) {
 	}
 
 	// Execute tool with stdin_scratchpad_id=10 and stdout_scratchpad_id=20
-	args := map[string]any{
-		"stdin_scratchpad_id":  10,
-		"stdout_scratchpad_id": 20,
+	stdinID := 10
+	stdoutID := 20
+	args := ExecToolArgs{
+		StdinScratchpadID:  &stdinID,
+		StdoutScratchpadID: &stdoutID,
 	}
 
 	summary := executeTool(context.Background(), agentDir, "pipe_tool.sh", toolPath, args)
