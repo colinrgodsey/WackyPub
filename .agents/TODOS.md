@@ -473,3 +473,30 @@ creation command - `write`/`append` create any missing parent
 directories automatically") so it's visible before an agent goes
 looking for `mkdir` and comes up empty.
 
+## CD: release artifacts for `wackypub`/`files-rw`, plus packaged skill bundles
+
+Not workshopped yet, just captured. Right now `.github/workflows/ci.yml`
+only builds/vets/tests on PR and push to `main` - there's no release
+pipeline, no published binaries, nothing a user or another agent platform
+could download without cloning and building from source.
+
+Wanted, roughly:
+- **CD publishing built `wackypub` and `files-rw` binaries** as release
+  artifacts (presumably a normal cross-platform Go build matrix, presumably
+  tag-triggered - not decided).
+- **A `skillpack.zip`** bundling every skill currently under `skills/`
+  (`wackypub`, `scratchpad-efficiency`, `a2a-announce-self`, whatever's
+  there by the time this gets built) as a single downloadable archive.
+- **A broader `for-agents.zip`**: the skillpack, the built binaries, and an
+  addendum explaining how to install the binaries and set up a workspace
+  from scratch - a single download someone could hand to an agent running
+  on a *different* platform/harness entirely, letting it self-bootstrap
+  wackypub without a human walking it through setup by hand.
+
+Open questions for the actual workshop pass: what the "addendum" doc
+should look like (probably needs to be written agent-facing, like a
+skill, not a human README); whether `for-agents.zip` bundles binaries for
+every platform or needs to be per-platform; what triggers a release
+(tags vs. something else); whether `skillpack.zip` is just a raw archive
+of `skills/` as-is or something more curated.
+
