@@ -307,3 +307,55 @@ func TestListDir(t *testing.T) {
 		t.Errorf("expected output to contain alpha.txt, got %q", out)
 	}
 }
+
+func TestTailFile(t *testing.T) {
+	tempDir, acc := helperSetupAccess(t)
+	filePath := filepath.Join(tempDir, "tail.txt")
+	content := "line 1\nline 2\nline 3\nline 4\nline 5\n"
+	if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write tail file: %v", err)
+	}
+
+	// 1. Unnumbered tail -n 2
+	tailOut, err := TailFile(acc, "tail.txt", tempDir, 2, false)
+	if err != nil {
+		t.Fatalf("TailFile failed: %v", err)
+	}
+	expectedTail := "Total lines: 5\nline 4\nline 5\n"
+	if tailOut != expectedTail {
+		t.Errorf("got %q, expected %q", tailOut, expectedTail)
+	}
+
+	// 2. Numbered tail -n 2
+	numberedTail, err := TailFile(acc, "tail.txt", tempDir, 2, true)
+	if err != nil {
+		t.Fatalf("TailFile numbered failed: %v", err)
+	}
+	expectedNumberedTail := "Total lines: 5\n     4\tline 4\n     5\tline 5\n"
+	if numberedTail != expectedNumberedTail {
+		t.Errorf("got %q, expected %q", numberedTail, expectedNumberedTail)
+	}
+}
+
+func TestAppendFile(t *testing.T) {
+	tempDir, acc := helperSetupAccess(t)
+	filePath := filepath.Join(tempDir, "append.txt")
+	initial := "line 1\n"
+	if err := os.WriteFile(filePath, []byte(initial), 0o600); err != nil {
+		t.Fatalf("failed to write initial file: %v", err)
+	}
+
+	appendData := "line 2\nline 3\n"
+	if err := AppendFile(acc, "append.txt", tempDir, appendData); err != nil {
+		t.Fatalf("AppendFile failed: %v", err)
+	}
+
+	readBack, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read back appended file: %v", err)
+	}
+	expected := "line 1\nline 2\nline 3\n"
+	if string(readBack) != expected {
+		t.Errorf("got %q, expected %q", string(readBack), expected)
+	}
+}

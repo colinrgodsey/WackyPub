@@ -25,7 +25,6 @@ type CreateScratchpadArgs struct {
 
 type CreateScratchpadResult struct {
 	ID   string `json:"id"`
-	Seq  int64  `json:"seq"`
 	Size int    `json:"size"`
 }
 
@@ -106,7 +105,6 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 		}
 		return CreateScratchpadResult{
 			ID:   entry.ID,
-			Seq:  entry.Seq,
 			Size: entry.Size,
 		}, nil
 	})
@@ -134,7 +132,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 3. list_scratchpads
 	listTool, err := functiontool.New(functiontool.Config{
 		Name:        "list_scratchpads",
-		Description: "List metadata for all currently-live scratchpad entries (ID, seq, size, created_by, created_at) and current capacity usage.",
+		Description: "List metadata for all currently-live scratchpad entries (ID, size, created_by), ordered oldest-first, and current capacity usage.",
 	}, func(ctx agent.Context, args ListScratchpadsArgs) (ListScratchpadsResult, error) {
 		items, count, capVal, err := ListScratchpads(agentDir)
 		if err != nil {

@@ -199,14 +199,14 @@ You are Ignis, an ancient wizard.
 
 ---
 
-### `scratchpad.json`
+### `scratchpad/` Directory
 
-`scratchpad.json` is a persistent JSON file (`<agent_id>/scratchpad.json`) storing live scratchpad entries with collision-safe 4-character IDs and FIFO eviction (see DECISIONS.md D18).
+`scratchpad/` is a persistent directory (`<agent_id>/scratchpad/`) storing one raw text file per live entry (`<id>-<created_by>.txt`) with collision-safe 4-character IDs and mtime-based eviction at a capacity of 300 entries (see DECISIONS.md D18, D30).
 
 #### Built-in Tools & I/O Integration:
-- **`create_scratchpad(text: string)`**: Stores `text` under a freshly generated 4-character ID (`[0-9a-z]`), returning `{id, seq, size}`. Automatically evicts the entry with the lowest `seq` when live entries exceed cap (50).
+- **`create_scratchpad(text: string)`**: Stores `text` under a freshly generated 4-character ID (`[0-9a-z]`), returning `{id, size}`. Automatically evicts the entry with the oldest file mtime when live entries exceed cap (300). Atomic and collision-safe across separate OS processes via `O_CREATE|O_EXCL`.
 - **`get_scratchpad(id: string, skip_lines?: int, num_lines?: int)`**: Retrieves stored text by ID, optionally paginated by line range.
-- **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (ID, seq, size, created_by, created_at) and capacity usage.
+- **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (id, size, created_by) ordered by file mtime ascending, and reports current capacity usage.
 - **`search_scratchpad(id: string, query: string, case_sensitive?: bool, regex?: bool, max_results?: int)`**: Searches a specific scratchpad entry by ID for matching lines (see DECISIONS.md D25). Returns 1-indexed line numbers, precomputed `skip_lines` for `get_scratchpad` pagination, and truncated line text (~200 chars), with total match counts reported separately.
 - **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` server-side before process execution. Arguments exceeding 500,000 bytes after expansion fail fast.
 - **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>`.

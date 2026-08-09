@@ -44,7 +44,7 @@ Agent A uses `run_command` to execute `wackypub` and write the payload *directly
   "args": ["agent", "agentB", "scratchpad", "create", "<SCRATCHPAD_DATA id=\"a_payload\" />"]
 }
 ```
-*Output:* `Created scratchpad entry "k3p1" (seq 4, 102400 bytes) for agent "agentB".`
+*Output:* `Created scratchpad entry "k3p1" (102400 bytes) for agent "agentB".`
 
 *(Prerequisite: `agentB` must be listed in `ws/agentA/WACKYPUB_ALLOWED_AGENTS`).*
 
@@ -169,6 +169,20 @@ Use the precomputed `skip_lines` value (`411`) directly in `get_scratchpad` to p
 ```
 
 **Token Savings:** Reduces a 10,000-line log read down to 20 lines of context window footprint.
+
+### Searching Inside a File's Content
+
+`files-rw` has no built-in search/grep command - don't look for one. Instead, use this exact same auto-capture pattern: read the file via `files-rw`, let the output land in a scratchpad entry, then `search_scratchpad` that entry, same as above.
+
+```json
+{
+  "command": "files-rw",
+  "args": ["read", "app.log"]
+}
+```
+If the file's content exceeds 4,000 bytes, the output auto-captures into a fresh scratchpad entry (`<STDOUT><SCRATCHPAD_DATA id="..." /></STDOUT>`) exactly like any other large command output - then follow the same 2-step search + slice workflow above.
+
+**Known limit**: this only works up to `files-rw read`'s own 200KB cap - a file larger than that can't be pulled into a scratchpad this way at all, `read` refuses outright with a pagination-suggestion error instead of producing output to capture. For a file that large, fall back to `files-rw read --start N --end M` in smaller ranges directly (no scratchpad search across the whole file in one shot).
 
 ---
 

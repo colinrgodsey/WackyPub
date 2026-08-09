@@ -433,20 +433,20 @@ what's printed, though it is still persisted to session.jsonl).`,
 // wackypub agent <id> scratchpad ... OR wackypub agent scratchpad ...
 var scratchpadCmd = &cobra.Command{
 	Use:   "scratchpad",
-	Short: "Manage persistent scratchpad entries for an agent (<ws_dir>/<agent_id>/scratchpad.json)",
-	Long:  "Create, read, list, and search persistent scratchpad entries stored in <ws_dir>/<agent_id>/scratchpad.json.",
+	Short: "Manage persistent scratchpad entries for an agent (<ws_dir>/<agent_id>/scratchpad/)",
+	Long:  "Create, read, list, and search persistent scratchpad entries stored in <ws_dir>/<agent_id>/scratchpad/.",
 }
 
 var scratchpadCreateCmd = &cobra.Command{
 	Use:   "create [agent_id] [message]",
 	Short: "Store a text payload into an agent's persistent scratchpad",
-	Long: `Creates a new scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json with a generated 4-character ID.
+	Long: `Creates a new scratchpad entry in <ws_dir>/<agent_id>/scratchpad/ with a generated 4-character ID.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
   message    The text to store. Can also be supplied via --message flag or piped in on stdin.
 
-Acquires the session lock for the duration of the write. Automatically evicts the entry with the lowest seq if capacity (50) is exceeded.`,
+Atomic and collision-safe across processes. Automatically evicts the entry with the oldest mtime if capacity (300) is exceeded.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -490,7 +490,7 @@ Acquires the session lock for the duration of the write. Automatically evicts th
 			return err
 		}
 
-		fmt.Printf("Created scratchpad entry %q (seq %d, %d bytes) for agent %q.\n", entry.ID, entry.Seq, entry.Size, agentID)
+		fmt.Printf("Created scratchpad entry %q (%d bytes) for agent %q.\n", entry.ID, entry.Size, agentID)
 		return nil
 	},
 }
@@ -548,7 +548,7 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Does not acq
 var scratchpadListCmd = &cobra.Command{
 	Use:   "list [agent_id]",
 	Short: "List all live scratchpad entries for an agent",
-	Long: `Lists metadata (ID, seq, size, created_by, created_at) and capacity usage for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad.json.
+	Long: `Lists metadata (ID, size, created_by), ordered oldest-first by mtime, and capacity usage for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad/.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).

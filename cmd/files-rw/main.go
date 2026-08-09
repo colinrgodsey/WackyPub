@@ -201,10 +201,63 @@ var listCmd = &cobra.Command{
 	},
 }
 
+var (
+	tailLines   int
+	tailNumbers bool
+)
+
+var tailCmd = &cobra.Command{
+	Use:   "tail <path>",
+	Short: "Read the last N lines of a text file",
+	Long:  "Return the last N lines of a text file (default 10) along with a Total lines count header. Pass --numbers / -N for cat -n style line numbers.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		access, err := filesrw.LoadAccess(cwd)
+		if err != nil {
+			return err
+		}
+		out, err := filesrw.TailFile(access, args[0], cwd, tailLines, tailNumbers)
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+		return nil
+	},
+}
+
+var appendCmd = &cobra.Command{
+	Use:   "append <path>",
+	Short: "Append content from standard input to a file",
+	Long:  "Append content provided on standard input directly to the target path, creating any missing parent directories. Note: unlike 'write', 'append' performs an in-place append rather than an atomic file swap.",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		access, err := filesrw.LoadAccess(cwd)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("failed to read content from stdin: %w", err)
+		}
+		return filesrw.AppendFile(access, args[0], cwd, string(data))
+	},
+}
+
 func init() {
 	readCmd.Flags().IntVarP(&readStart, "start", "s", 0, "1-indexed starting line number")
 	readCmd.Flags().IntVarP(&readEnd, "end", "e", 0, "1-indexed ending line number")
 	readCmd.Flags().BoolVarP(&readNumbers, "numbers", "n", false, "format output with cat -n style line numbers (useful before construct edit/patch)")
+
+	tailCmd.Flags().IntVarP(&tailLines, "lines", "n", 10, "number of trailing lines to show")
+	tailCmd.Flags().BoolVarP(&tailNumbers, "numbers", "N", false, "format output with cat -n style line numbers")
 
 	editCmd.Flags().StringVar(&editOld, "old", "", "exact string to replace (required)")
 	editCmd.Flags().StringVar(&editNew, "new", "", "replacement string")
@@ -222,6 +275,8 @@ func init() {
 	rootCmd.AddCommand(editCmd)
 	rootCmd.AddCommand(patchCmd)
 	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(tailCmd)
+	rootCmd.AddCommand(appendCmd)
 }
 
 func main() {

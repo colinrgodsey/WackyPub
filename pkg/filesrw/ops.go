@@ -303,3 +303,83 @@ func ListDir(acc *Access, path, cwd string, long, all, recursive bool) (string, 
 	}
 	return stdout.String(), nil
 }
+
+// TailFile opens path via acc.OpenFile and returns the last numLines lines (default 10)
+// along with a total line count header ("Total lines: N\n"). If numbered is true, output is
+// cat -n formatted ("%6d\t%s\n").
+func TailFile(acc *Access, path, cwd string, numLines int, numbered bool) (string, error) {
+	if numLines <= 0 {
+		numLines = 10
+	}
+
+	f, canonPath, err := acc.OpenFile(path, cwd, false, os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("failed to read %s: %w", canonPath, err)
+	}
+	if isBinary(data) {
+		return "", fmt.Errorf("%s looks like a binary file - refusing to read it as text", canonPath)
+	}
+
+	rawLines := strings.Split(string(data), "\n")
+	if len(rawLines) > 0 && rawLines[len(rawLines)-1] == "" {
+		rawLines = rawLines[:len(rawLines)-1]
+	}
+	totalLines := len(rawLines)
+
+	from := totalLines - numLines + 1
+	if from < 1 {
+		from = 1
+	}
+	to := totalLines
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Total lines: %d\n", totalLines)
+
+	if from <= to && totalLines > 0 {
+		if !numbered {
+			for i := from; i <= to; i++ {
+				b.WriteString(rawLines[i-1])
+				b.WriteByte('\n')
+			}
+		} else {
+			for i := from; i <= to; i++ {
+				fmt.Fprintf(&b, "%6d\t%s\n", i, rawLines[i-1])
+			}
+		}
+	}
+
+	out := b.String()
+	if len(out) > MaxReadSizeBytes {
+		return "", fmt.Errorf("%s tail output is %d bytes, which exceeds the %d byte read limit - use a smaller line count", canonPath, len(out), MaxReadSizeBytes)
+	}
+	return out, nil
+}
+
+// AppendFile opens path via acc.OpenFile with write access and appends content directly to the file.
+func AppendFile(acc *Access, path, cwd string, content string) error {
+	canonPath, err := acc.Resolve(path, cwd, true)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(canonPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create parent directory %s: %w", dir, err)
+	}
+
+	f, canon, err := acc.OpenFile(path, cwd, true, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, err := f.WriteString(content); err != nil {
+		return fmt.Errorf("failed to append to %s: %w", canon, err)
+	}
+	return nil
+}

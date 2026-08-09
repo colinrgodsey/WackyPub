@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestScratchpadCreationAndRetrieval(t *testing.T) {
@@ -21,9 +22,6 @@ func TestScratchpadCreationAndRetrieval(t *testing.T) {
 
 	if len(entry.ID) != 4 {
 		t.Errorf("expected 4-character ID, got %q (len %d)", entry.ID, len(entry.ID))
-	}
-	if entry.Seq != 1 {
-		t.Errorf("expected Seq 1, got %d", entry.Seq)
 	}
 	if entry.Size != len(text) {
 		t.Errorf("expected Size %d, got %d", len(text), entry.Size)
@@ -75,6 +73,8 @@ func TestScratchpadEvictionCap(t *testing.T) {
 		if i == 1 {
 			firstID = entry.ID
 		}
+		// Ensure mtime ticks forward for deterministic eviction order
+		time.Sleep(1 * time.Millisecond)
 	}
 
 	items, count, capVal, err := ListScratchpads(agentDir)
@@ -88,11 +88,11 @@ func TestScratchpadEvictionCap(t *testing.T) {
 	if capVal != MaxScratchpadEntries {
 		t.Errorf("expected cap %d, got %d", MaxScratchpadEntries, capVal)
 	}
-	if items[0].Seq != 2 {
-		t.Errorf("expected lowest remaining seq to be 2, got %d", items[0].Seq)
+	if len(items) != MaxScratchpadEntries {
+		t.Errorf("expected len %d, got %d", MaxScratchpadEntries, len(items))
 	}
 
-	// First entry (seq 1) should have been evicted
+	// First entry (oldest mtime) should have been evicted
 	_, err = GetScratchpad(agentDir, firstID, nil, nil)
 	if err == nil {
 		t.Fatalf("expected evicted first ID %q to return error, got nil", firstID)
@@ -173,7 +173,6 @@ func TestCreateScratchpad_ConcurrentCreations(t *testing.T) {
 		t.Errorf("concurrent CreateScratchpad failed: %v", err)
 	}
 
-	// Verify scratchpad.json parses cleanly and has 20 entries
 	items, count, capVal, err := ListScratchpads(agentDir)
 	if err != nil {
 		t.Fatalf("ListScratchpads failed after concurrent creation: %v", err)

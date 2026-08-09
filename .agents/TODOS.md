@@ -313,3 +313,109 @@ history versus just compressing it - worth designing before some
 long-running agent actually hits this, rather than discovered live the
 way most of this project's other gaps have been.
 
+## A receiving agent has no idea whether it was called by another agent or a human
+
+Traced through the actual cross-agent call path: `AppendSessionTurn`
+wraps whatever text into a plain `{"role":"user","parts":[{"text":...}]}`
+turn - identical in shape whether it came from a human typing at a
+terminal or from another agent's `run_command -> wackypub agent <id>
+prompt "..."` subprocess call. Nothing attaches sender identity anywhere
+- no `senderID` field, no automatic framing, nothing. The only way a
+receiving agent currently learns it's talking to another agent is if the
+caller's message text happens to self-identify by convention, which
+nothing enforces or even documents.
+
+The infrastructure to fix this properly already exists and wouldn't need
+new state: `WACKYPUB_CALL_CHAIN` (D16) already carries exactly this -
+its second-to-last entry, when the chain is longer than 1, *is* the
+direct caller's agent ID (e.g. `"A,B"` by the time B's own generation
+runs if A called B, vs. just `"B"` for a human-initiated top-level call).
+It's currently read only for cycle detection, never surfaced to the
+model or attached to the persisted turn.
+
+Two directions, not yet decided between:
+- **Hard-coded**: `wackypub` itself reads `WACKYPUB_CALL_CHAIN` and
+  automatically injects something like `[Message from agent: A]` ahead of
+  the turn text (or into the rendered system prompt) whenever the chain
+  shows a caller - universal, zero effort for the calling agent, but
+  rigid (fixed format, no room for a caller to add more context about
+  itself than just its ID).
+- **Skill-based**: document a convention teaching agents how to
+  self-identify when calling a peer, and how to interpret/expect that
+  framing when receiving a message - more flexible (a caller could
+  identify itself with role/purpose, not just an ID), but only as
+  reliable as agents actually following the convention, and still needs
+  *some* way to reliably expose the caller's real identity (not just
+  trust self-reported text) if that reliability matters for a given use
+  case.
+
+Current lean is skill-based, for the flexibility - but not yet decided,
+and skill-based still leaves open how (or whether) `WACKYPUB_CALL_CHAIN`
+gets surfaced to the agent at all, since the model has no innate
+visibility into its own process's environment variables.
+
+## `files-rw` has no way to search inside a file's content - probably doesn't need its own, for the single-file case
+
+`files-rw` can read a whole file or a line range, but has no way to find
+*where* something is inside a file's content - no equivalent of
+`search_scratchpad` (D25) for actual files. Reviewed against real usage
+(grep is one of the most-used tools across this whole project's own
+sessions): line numbers and regex are used constantly, context lines
+(`-A`/`-B`/`-C`) surprisingly often, recursive multi-file search
+frequently for whole-codebase work.
+
+**Single-file search probably doesn't need a new `files-rw` command at
+all** - compose what already exists instead: `files-rw read <path>`, then
+`search_scratchpad` on the result (large `read` output already
+auto-captures into a scratchpad entry via the existing `run_command`
+>4000-byte threshold, D18). Avoids maintaining two separate search
+implementations (one for scratchpad entries, one for file content) for
+the same underlying need, and matches how D29 resolved "replace the last
+line" - composing existing primitives instead of adding a redundant one.
+
+**Real, unresolved limit on that composition**: it's bounded by `read`'s
+own 200KB cap (`MaxReadSizeBytes`) - a file larger than that can't be
+pulled into a scratchpad this way at all, `read` refuses outright before
+producing any output to auto-capture. That's exactly the case a search
+capability would matter most for (a file too big to just read straight
+through), and composition doesn't solve it. Worth deciding whether that's
+an acceptable boundary (a 200KB single file is already a lot for an agent
+workflow) or whether it needs its own answer later.
+
+**Multi-file search is a genuinely harder, separate question** - not
+resolved by the same composition. Concatenating several files into one
+scratchpad entry to search loses per-file attribution (a match's line
+number alone doesn't say which file it came from), so it'd need real
+design (something closer to `list -R` crossed with search across
+everything under an allowed root, returning matches tagged by file) if
+it's ever wanted, not just "read a bunch of files into one entry."
+
+Also: the scratchpad-efficiency skill (`skills/scratchpad-efficiency/`)
+should document the "pull a file into scratchpad, then `search_scratchpad`
+it" pattern explicitly as the recommended approach for searching inside a
+file, so an agent doesn't go looking for a `files-rw search` command that
+doesn't exist.
+
+## `files-rw` reads a file's full contents into memory before ever checking its size
+
+Found while reviewing D29's `TailFile` (`pkg/filesrw/ops.go`): it calls
+`io.ReadAll(f)` on the *entire* file unconditionally, then only checks
+`MaxReadSizeBytes` against the small formatted "last N lines" *output* -
+so `tail -n 3` on an arbitrarily large file still loads the whole thing
+into memory first, regardless of how few lines were actually requested.
+Not a new bug introduced by D29 - `ReadFile` already has the identical
+shape (`io.ReadAll` on the whole file, then a size check on derived
+output/range, never a check on the raw input size before reading it).
+So this is a pre-existing pattern across the whole read path, now
+confirmed in two places.
+
+Given the live base64/`dev/urandom` resource-exhaustion incident hit
+during swarm testing (`docs/SWARM_TESTING.md`), this is a real
+unbounded-memory vector reachable through `files-rw`'s own command
+surface alone (no `bash` required) - an agent (or adversarial input)
+pointing `read`/`tail` at a multi-GB file could exhaust memory before
+`files-rw` ever gets to reject it. Fix would be checking `os.Stat`'s
+size (or reading in bounded chunks) before `io.ReadAll`, rejecting early
+if the input itself is already unreasonably large - independent of what
+range/line-count was actually requested.
+

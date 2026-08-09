@@ -2,7 +2,6 @@ package agent
 
 import (
 	"crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -11,36 +10,27 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 const (
-	ScratchpadFileName        = "scratchpad.json"
-	MaxScratchpadEntries      = 50
+	ScratchpadDirName         = "scratchpad"
+	MaxScratchpadEntries      = 300
 	MaxExpandedArgBytes       = 500000
 	ScratchpadOutputThreshold = 4000
 )
 
 type ScratchpadEntry struct {
-	ID        string    `json:"id"`
-	Seq       int64     `json:"seq"`
-	Size      int       `json:"size"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-	Text      string    `json:"text"`
+	ID        string `json:"id"`
+	Size      int    `json:"size"`
+	CreatedBy string `json:"created_by"`
+	Text      string `json:"text"`
 }
 
 type ScratchpadItem struct {
-	ID        string    `json:"id"`
-	Seq       int64     `json:"seq"`
-	Size      int       `json:"size"`
-	CreatedBy string    `json:"created_by"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type ScratchpadStore struct {
-	Entries map[string]*ScratchpadEntry `json:"entries"`
+	ID        string `json:"id"`
+	Size      int    `json:"size"`
+	CreatedBy string `json:"created_by"`
 }
 
 var (
@@ -48,169 +38,152 @@ var (
 	macroIDRegex         = regexp.MustCompile(`id="([^"]+)"`)
 	macroSkipLinesRegex  = regexp.MustCompile(`skip_lines="(\d+)"`)
 	macroNumLinesRegex   = regexp.MustCompile(`num_lines="(\d+)"`)
-
-	scratchpadMutexes  sync.Map
-	globalScratchpadMu sync.Mutex
 )
 
-func getScratchpadMutex(agentDir string) *sync.Mutex {
-	absDir, err := filepath.Abs(agentDir)
-	if err != nil {
-		absDir = agentDir
-	}
-	if m, ok := scratchpadMutexes.Load(absDir); ok {
-		return m.(*sync.Mutex)
-	}
-	globalScratchpadMu.Lock()
-	defer globalScratchpadMu.Unlock()
-	if m, ok := scratchpadMutexes.Load(absDir); ok {
-		return m.(*sync.Mutex)
-	}
-	m := &sync.Mutex{}
-	scratchpadMutexes.Store(absDir, m)
-	return m
-}
-
-func generateScratchpadID(liveEntries map[string]*ScratchpadEntry) string {
+func generateRandomID() string {
 	const charset = "0123456789abcdefghijklmnopqrstuvwxyz"
-	for {
-		var result strings.Builder
-		for i := 0; i < 4; i++ {
-			n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
-			if err != nil {
-				result.WriteByte(charset[time.Now().UnixNano()%int64(len(charset))])
-				continue
-			}
-			result.WriteByte(charset[n.Int64()])
+	var result strings.Builder
+	for i := 0; i < 4; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			result.WriteByte(charset[time.Now().UnixNano()%int64(len(charset))])
+			continue
 		}
-		id := result.String()
-		if _, exists := liveEntries[id]; !exists {
-			return id
+		result.WriteByte(charset[n.Int64()])
+	}
+	return result.String()
+}
+
+func findScratchpadFile(agentDir string, id string) (string, string, error) {
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	pattern := filepath.Join(spDir, id+"-*.txt")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return "", "", fmt.Errorf("scratchpad entry %q not found", id)
+	}
+	return matches[0], filepath.Base(matches[0]), nil
+}
+
+func parseCreatedByFromFilename(baseName string) string {
+	baseNoExt := strings.TrimSuffix(baseName, ".txt")
+	parts := strings.SplitN(baseNoExt, "-", 2)
+	if len(parts) > 1 {
+		return parts[1]
+	}
+	return ""
+}
+
+func EvictOldestScratchpad(spDir string, maxCap int) {
+	entries, err := os.ReadDir(spDir)
+	if err != nil || len(entries) <= maxCap {
+		return
+	}
+
+	type fileInfo struct {
+		name    string
+		modTime time.Time
+	}
+	var files []fileInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
 		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{
+			name:    entry.Name(),
+			modTime: info.ModTime(),
+		})
+	}
+
+	if len(files) <= maxCap {
+		return
+	}
+
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime.Before(files[j].modTime)
+	})
+
+	toRemove := len(files) - maxCap
+	for i := 0; i < toRemove; i++ {
+		_ = os.Remove(filepath.Join(spDir, files[i].name))
 	}
 }
 
-// ReadScratchpadStore reads <agentDir>/scratchpad.json. If absent, returns an empty store.
-func ReadScratchpadStore(agentDir string) (*ScratchpadStore, error) {
-	spPath := filepath.Join(agentDir, ScratchpadFileName)
-	data, err := os.ReadFile(spPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &ScratchpadStore{Entries: make(map[string]*ScratchpadEntry)}, nil
-		}
-		return nil, fmt.Errorf("failed to read scratchpad at %s: %w", spPath, err)
-	}
-
-	var store ScratchpadStore
-	if err := json.Unmarshal(data, &store); err != nil {
-		return nil, fmt.Errorf("failed to parse scratchpad JSON: %w", err)
-	}
-	if store.Entries == nil {
-		store.Entries = make(map[string]*ScratchpadEntry)
-	}
-	return &store, nil
-}
-
-// WriteScratchpadStore persists <agentDir>/scratchpad.json atomically via temporary file replacement.
-func WriteScratchpadStore(agentDir string, store *ScratchpadStore) error {
-	if err := os.MkdirAll(agentDir, 0755); err != nil {
-		return fmt.Errorf("failed to create agent directory: %w", err)
-	}
-
-	data, err := json.MarshalIndent(store, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal scratchpad JSON: %w", err)
-	}
-
-	spPath := filepath.Join(agentDir, ScratchpadFileName)
-	tmpPath := spPath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return fmt.Errorf("failed to write scratchpad tmp file: %w", err)
-	}
-
-	return os.Rename(tmpPath, spPath)
-}
-
-// CreateScratchpad creates a new scratchpad entry with a random 4-character ID according to D18.
+// CreateScratchpad creates a new scratchpad entry in <agentDir>/scratchpad/<id>-<createdBy>.txt
+// according to D30.
 // Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
-// Thread-safe for concurrent goroutines within the same process.
-// Automatically evicts the entry with the lowest seq when live entries exceed cap (50).
+// Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
+// Automatically evicts the entry with the oldest mtime when live entries exceed cap (300).
 func CreateScratchpad(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
 	expandedText, err := ExpandScratchpadMacros(agentDir, text)
 	if err != nil {
 		return nil, fmt.Errorf("failed to expand scratchpad macros: %w", err)
 	}
 
-	mu := getScratchpadMutex(agentDir)
-	mu.Lock()
-	defer mu.Unlock()
-
-	store, err := ReadScratchpadStore(agentDir)
-	if err != nil {
-		return nil, err
-	}
-
-	var maxSeq int64 = 0
-	for _, entry := range store.Entries {
-		if entry.Seq > maxSeq {
-			maxSeq = entry.Seq
-		}
-	}
-
-	id := generateScratchpadID(store.Entries)
 	if createdBy == "" {
 		createdBy = "create_scratchpad"
 	}
 
-	entry := &ScratchpadEntry{
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	if err := os.MkdirAll(spDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create scratchpad directory: %w", err)
+	}
+
+	var id string
+	var filePath string
+	var file *os.File
+
+	for i := 0; i < 100; i++ {
+		candidateID := generateRandomID()
+		candidatePath := filepath.Join(spDir, fmt.Sprintf("%s-%s.txt", candidateID, createdBy))
+		f, err := os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			id = candidateID
+			filePath = candidatePath
+			file = f
+			break
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("failed to create scratchpad entry file: %w", err)
+		}
+	}
+	if file == nil {
+		return nil, fmt.Errorf("failed to generate unique scratchpad ID after retries")
+	}
+
+	if _, err := file.WriteString(expandedText); err != nil {
+		file.Close()
+		os.Remove(filePath)
+		return nil, fmt.Errorf("failed to write scratchpad content: %w", err)
+	}
+	file.Close()
+
+	EvictOldestScratchpad(spDir, MaxScratchpadEntries)
+
+	return &ScratchpadEntry{
 		ID:        id,
-		Seq:       maxSeq + 1,
 		Size:      len(expandedText),
 		CreatedBy: createdBy,
-		CreatedAt: time.Now().UTC(),
 		Text:      expandedText,
-	}
-	store.Entries[id] = entry
-
-	// Evict lowest seq entry if cap (50) exceeded
-	if len(store.Entries) > MaxScratchpadEntries {
-		var lowestSeq int64 = -1
-		var lowestID string
-		for eID, e := range store.Entries {
-			if lowestSeq == -1 || e.Seq < lowestSeq {
-				lowestSeq = e.Seq
-				lowestID = eID
-			}
-		}
-		if lowestID != "" {
-			delete(store.Entries, lowestID)
-		}
-	}
-
-	if err := WriteScratchpadStore(agentDir, store); err != nil {
-		return nil, err
-	}
-	return entry, nil
+	}, nil
 }
 
 // GetScratchpad retrieves stored text by entry ID, optionally paginated by line range.
-// Thread-safe for concurrent goroutines within the same process.
 func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (string, error) {
-	mu := getScratchpadMutex(agentDir)
-	mu.Lock()
-	defer mu.Unlock()
-
-	store, err := ReadScratchpadStore(agentDir)
+	filePath, _, err := findScratchpadFile(agentDir, id)
 	if err != nil {
 		return "", err
 	}
 
-	entry, exists := store.Entries[id]
-	if !exists {
-		return "", fmt.Errorf("scratchpad entry %q not found", id)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read scratchpad entry %q: %w", id, err)
 	}
 
-	lines := strings.Split(entry.Text, "\n")
+	lines := strings.Split(string(data), "\n")
 	start := 0
 	if skipLines != nil && *skipLines > 0 {
 		start = *skipLines
@@ -234,38 +207,60 @@ func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (s
 	return strings.Join(lines[start:end], "\n"), nil
 }
 
-// ListScratchpads returns metadata items for all live entries in store ordered by seq ascending.
-// Thread-safe for concurrent goroutines within the same process.
+// ListScratchpads returns metadata items for all live entries in <agentDir>/scratchpad/ ordered by mtime ascending.
 func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
-	mu := getScratchpadMutex(agentDir)
-	mu.Lock()
-	defer mu.Unlock()
-
-	store, err := ReadScratchpadStore(agentDir)
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	entries, err := os.ReadDir(spDir)
 	if err != nil {
-		return nil, 0, MaxScratchpadEntries, err
+		if os.IsNotExist(err) {
+			return []ScratchpadItem{}, 0, MaxScratchpadEntries, nil
+		}
+		return nil, 0, MaxScratchpadEntries, fmt.Errorf("failed to read scratchpad directory: %w", err)
 	}
 
-	var items []ScratchpadItem
-	for _, entry := range store.Entries {
-		items = append(items, ScratchpadItem{
-			ID:        entry.ID,
-			Seq:       entry.Seq,
-			Size:      entry.Size,
-			CreatedBy: entry.CreatedBy,
-			CreatedAt: entry.CreatedAt,
+	type itemWithTime struct {
+		item    ScratchpadItem
+		modTime time.Time
+	}
+
+	var list []itemWithTime
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+
+		baseName := entry.Name()
+		id := strings.SplitN(baseName, "-", 2)[0]
+		createdBy := parseCreatedByFromFilename(baseName)
+
+		list = append(list, itemWithTime{
+			item: ScratchpadItem{
+				ID:        id,
+				Size:      int(info.Size()),
+				CreatedBy: createdBy,
+			},
+			modTime: info.ModTime(),
 		})
 	}
 
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Seq < items[j].Seq
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].modTime.Before(list[j].modTime)
 	})
+
+	items := make([]ScratchpadItem, len(list))
+	for i, l := range list {
+		items[i] = l.item
+	}
 
 	return items, len(items), MaxScratchpadEntries, nil
 }
 
 // ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" /> macros
-// in text with the corresponding scratchpad text content according to D18.
+// in text with the corresponding scratchpad text content according to D18/D28/D30.
 func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 	if !strings.Contains(text, "<SCRATCHPAD_DATA") {
 		return text, nil
@@ -324,8 +319,7 @@ type SearchScratchpadResult struct {
 	Matches      []ScratchpadMatch `json:"matches"`
 }
 
-// SearchScratchpad searches a specific scratchpad entry (by ID) for query according to D25.
-// Returns matching lines with precomputed skip_lines for get_scratchpad pagination.
+// SearchScratchpad searches a specific scratchpad entry (by ID) for query according to D25/D30.
 func SearchScratchpad(agentDir string, id string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
 	if id == "" {
 		return nil, fmt.Errorf("id is required")
@@ -341,21 +335,17 @@ func SearchScratchpad(agentDir string, id string, query string, caseSensitive *b
 		isCaseSensitive = *caseSensitive
 	}
 
-	mu := getScratchpadMutex(agentDir)
-	mu.Lock()
-	defer mu.Unlock()
-
-	store, err := ReadScratchpadStore(agentDir)
+	filePath, _, err := findScratchpadFile(agentDir, id)
 	if err != nil {
 		return nil, err
 	}
 
-	entry, exists := store.Entries[id]
-	if !exists {
-		return nil, fmt.Errorf("scratchpad entry %q not found", id)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read scratchpad entry %q: %w", id, err)
 	}
 
-	lines := strings.Split(entry.Text, "\n")
+	lines := strings.Split(string(data), "\n")
 
 	var reg *regexp.Regexp
 	if useRegex {

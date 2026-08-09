@@ -313,8 +313,8 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string) (bool, er
 	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
 }
 
-// CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad.json).
-// Acquires the session lock for the duration of the entry creation and atomic write.
+// CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad/).
+// Atomic and collision-safe across processes without requiring the session lock.
 func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
@@ -330,12 +330,6 @@ func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy strin
 	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
-	lock, err := AcquireSessionLock(agentDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
-	}
-	defer lock.Release()
-
 	if createdBy == "" {
 		createdBy = "cli"
 	}
