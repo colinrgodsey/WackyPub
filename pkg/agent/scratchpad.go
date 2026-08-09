@@ -303,3 +303,112 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 	}
 	return expanded, nil
 }
+
+type ScratchpadMatch struct {
+	Line      int    `json:"line"`
+	SkipLines int    `json:"skip_lines"`
+	Text      string `json:"text"`
+}
+
+type SearchScratchpadResult struct {
+	ID           string            `json:"id"`
+	Query        string            `json:"query"`
+	TotalMatches int               `json:"total_matches"`
+	MaxResults   int               `json:"max_results"`
+	Matches      []ScratchpadMatch `json:"matches"`
+}
+
+// SearchScratchpad searches a specific scratchpad entry (by ID) for query according to D25.
+// Returns matching lines with precomputed skip_lines for get_scratchpad pagination.
+func SearchScratchpad(agentDir string, id string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
+	if id == "" {
+		return nil, fmt.Errorf("id is required")
+	}
+	if query == "" {
+		return nil, fmt.Errorf("query must not be empty")
+	}
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	isCaseSensitive := true
+	if caseSensitive != nil {
+		isCaseSensitive = *caseSensitive
+	}
+
+	mu := getScratchpadMutex(agentDir)
+	mu.Lock()
+	defer mu.Unlock()
+
+	store, err := ReadScratchpadStore(agentDir)
+	if err != nil {
+		return nil, err
+	}
+
+	entry, exists := store.Entries[id]
+	if !exists {
+		return nil, fmt.Errorf("scratchpad entry %q not found", id)
+	}
+
+	lines := strings.Split(entry.Text, "\n")
+
+	var reg *regexp.Regexp
+	if useRegex {
+		pattern := query
+		if !isCaseSensitive {
+			pattern = "(?i)" + pattern
+		}
+		r, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex query %q: %w", query, err)
+		}
+		reg = r
+	}
+
+	var matches []ScratchpadMatch
+	totalMatches := 0
+
+	queryLower := ""
+	if !useRegex && !isCaseSensitive {
+		queryLower = strings.ToLower(query)
+	}
+
+	for i, lineText := range lines {
+		matched := false
+		if useRegex {
+			matched = reg.MatchString(lineText)
+		} else {
+			if isCaseSensitive {
+				matched = strings.Contains(lineText, query)
+			} else {
+				matched = strings.Contains(strings.ToLower(lineText), queryLower)
+			}
+		}
+
+		if matched {
+			totalMatches++
+			if len(matches) < maxResults {
+				truncatedText := lineText
+				if len(truncatedText) > 200 {
+					truncatedText = truncatedText[:200]
+				}
+				matches = append(matches, ScratchpadMatch{
+					Line:      i + 1,
+					SkipLines: i,
+					Text:      truncatedText,
+				})
+			}
+		}
+	}
+
+	if matches == nil {
+		matches = []ScratchpadMatch{}
+	}
+
+	return &SearchScratchpadResult{
+		ID:           id,
+		Query:        query,
+		TotalMatches: totalMatches,
+		MaxResults:   maxResults,
+		Matches:      matches,
+	}, nil
+}

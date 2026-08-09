@@ -239,49 +239,18 @@ a natural moment for it - it's a genuinely accurate analogy, not just a
 catchy line, and might be a better hook than the current "every capability
 is a file" framing alone.
 
-## `files-rw`: fd-based access checking, to close the hardlink-read and TOCTOU gaps
+## `files-rw`: fd-based access checking & hardlink safety (first pass done, revision in progress per D26)
 
-Found via two `files-rw` swarm pen-tests (see DECISIONS.md D22-D24;
-current report at `docs/files-rw-security-test.md`, state `n` in
-`SECURITY_TESTING.md`) and confirmed live, not just reasoned about:
+First pass implemented in `pkg/filesrw/access.go` and `pkg/filesrw/ops.go` to resolve the two gaps documented in D24 - `Access.OpenFile` (opens the target fd during access validation, does I/O on the open handle, closing the check-then-open TOCTOU window) and `checkHardlinkSafety` (rejects a target whose `Nlink > 1` unless every link resolves within the allowed roots, via a `countInodesInRoots` directory walk).
 
-1. **Hardlink read bypass, including cross-agent.** `ln
-   target/secret.txt ./scratch/hl && files-rw read ./scratch/hl` succeeds
-   - a hardlink placed inside an allowed directory gives an out-of-bounds
-   inode an in-bounds name, and `Access.Resolve`'s path-prefix check has
-   no way to know the two paths share storage. Generalizes past a single
-   agent's own out-of-bounds files to **other agents' files entirely**
-   (`ln /ws/worker-sonnet/target/secret.txt ./scratch/hl` from a
-   *different* worker's directory, confirmed live) - not excused by "the
-   agent already has shell access to its own sandbox," since it's one
-   agent reading a different agent's private files.
-2. **TOCTOU race between `Access.Resolve()` and the actual I/O, no
-   hardlink needed.** `Access.Resolve()` returns a path string; the real
-   filesystem operation happens afterward as a separate step against that
-   same string, with no file descriptor held open across the gap. A
-   background process racing to swap the file's content between those two
-   steps wins 99-100% of the time (confirmed live against both `read` and
-   `copy`; the same structural gap exists by inspection in `edit`,
-   `patch`, `move`, `delete` too).
+Reviewed before spending a swarm run on it and found two problems the first pass didn't cover - see D26 for the revised plan, now in progress:
+1. `PatchFile` opens+checks+closes the fd, then does the real work via the `patch` subprocess against the path string afterward - reopens the exact TOCTOU window for `patch` specifically. Fix: replace the subprocess with `github.com/bluekeyes/go-gitdiff`, applied against the already-open fd like `EditFile` already does.
+2. `countInodesInRoots` does a full recursive `filepath.Walk` over every allowed root on *every* access check - a new performance/DoS surface that didn't exist before this fix. Fix: drop the walk, reject on bare `Nlink > 1` instead (O(1), no walk) - closes every attack the second swarm run actually demonstrated, at the cost of also refusing a legitimate file that happens to have multiple hardlinks for unrelated reasons (expected rare for agent-workspace files). A real, non-blunt hardlink defense remains an open question for later - noted in D26.
 
-Both share the same fix shape: open the file (`O_NOFOLLOW`) as part of, or
-immediately after, the access check, and do all subsequent I/O through
-that already-open file descriptor rather than re-resolving the path string
-at syscall time. This collapses the TOCTOU window to nothing and, as a
-side effect, makes the hardlink case checkable too (validate the open fd's
-identity - e.g. via `os.SameFile` against everything reachable under the
-allowed roots by a non-hardlink path - rather than just the path string
-that produced it).
+D26 landed and was verified directly (not yet a swarm pass, doesn't earn `y`/`n`): hardlink read, hardlink+copy, and cross-agent hardlink read are all now denied cleanly, confirmed live including against a real second agent directory; legitimate read/edit/copy still work. The TOCTOU race, however, is still 100/100 reproducible against both `read` and `copy` even after the fix - and on reflection isn't a `files-rw` bug in the fixable sense at all (see the "no-bash swarm re-test" TODO below for why). `SECURITY_TESTING.md` stays at `?` until a fresh swarm pen-test pass runs against the current state.
 
-Deliberately not implemented yet (D24): this touches the core of
-`Access.Resolve` and every call site in `pkg/filesrw/ops.go` broadly
-enough to warrant its own dedicated pass rather than a rushed fix bolted
-onto an already-large round of findings. Needs a fresh swarm run against
-the fix once it lands - `files-rw` stays at `n` until then, not reset to
-`?`, since this is a confirmed finding, not an invalidated one.
+## Re-run the next `files-rw` swarm test without giving workers `bash`
 
-(The earlier, narrower version of this TODO - an explicit hardlink/inode
-check specifically for the `FILES_RW_ACCESS`-hardlink case, incidentally
-mitigated today by `WriteFile`'s atomic rename - is superseded by the
-above: the fd-based fix covers that case too, and the read-side gap it
-didn't address turned out to be the more serious one.)
+The second swarm run's "TOCTOU race" finding (`cp target/secret.txt scratch/race_target &` racing `files-rw read`) doesn't actually demonstrate a `files-rw`-specific leak on reflection: `cp` overwrites the destination inode's content in place, not via a rename/symlink-swap `Access.OpenFile`'s fd-based check could ever catch, and for the race to have anything to win with, `cp` first has to read `target/secret.txt` *directly* - meaning the "secret" is already sitting in the agent-writable, agent-readable `./scratch` the instant `cp` finishes, independent of whether `files-rw read` is ever called afterward. Same underlying issue as the hardlink case's original "if an agent has bash access it's game over" framing (D22/D24): the test setup gives workers real `bash` (needed so far for building fixtures - symlinks, hardlinks, race loops), which means every worker already has full OS-level read access to anything the OS user can read, making some findings a property of the test harness rather than of `files-rw` itself.
+
+Next full swarm run against `files-rw` should try giving workers *only* `files-rw` - no `bash`, no `ln`, no fixture-building tools at all. This is closer to `files-rw`'s actual intended deployment (D22: the tool is meant to be the *only* file-touching capability an agent has) and would cleanly separate "vulnerabilities reachable through `files-rw`'s own command surface alone" from "things possible because the test setup handed out a shell." Loses the ability for workers to construct symlink/hardlink attack fixtures themselves (there's no `files-rw` command that creates a symlink or hardlink), which is a real trade-off, not a pure improvement - probably worth running both configurations rather than only ever switching to bash-less, since each answers a different question about the deployment surface.

@@ -46,11 +46,7 @@ var readCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(args[0], cwd, false)
-		if err != nil {
-			return err
-		}
-		out, err := filesrw.ReadFile(canon, readStart, readEnd, readNumbers)
+		out, err := filesrw.ReadFile(access, args[0], cwd, readStart, readEnd, readNumbers)
 		if err != nil {
 			return err
 		}
@@ -73,15 +69,11 @@ var writeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(args[0], cwd, true)
-		if err != nil {
-			return err
-		}
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("failed to read content from stdin: %w", err)
 		}
-		return filesrw.WriteFile(canon, string(data))
+		return filesrw.WriteFile(access, args[0], cwd, string(data))
 	},
 }
 
@@ -99,15 +91,7 @@ var copyCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canonSrc, err := access.Resolve(args[0], cwd, false)
-		if err != nil {
-			return err
-		}
-		canonDst, err := access.Resolve(args[1], cwd, true)
-		if err != nil {
-			return err
-		}
-		return filesrw.CopyFile(canonSrc, canonDst)
+		return filesrw.CopyFile(access, args[0], args[1], cwd)
 	},
 }
 
@@ -125,15 +109,7 @@ var moveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canonSrc, err := access.Resolve(args[0], cwd, true)
-		if err != nil {
-			return err
-		}
-		canonDst, err := access.Resolve(args[1], cwd, true)
-		if err != nil {
-			return err
-		}
-		return filesrw.MoveFile(canonSrc, canonDst)
+		return filesrw.MoveFile(access, args[0], args[1], cwd)
 	},
 }
 
@@ -151,11 +127,7 @@ var deleteCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(args[0], cwd, true)
-		if err != nil {
-			return err
-		}
-		return filesrw.DeleteFile(canon)
+		return filesrw.DeleteFile(access, args[0], cwd)
 	},
 }
 
@@ -176,11 +148,7 @@ var editCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(args[0], cwd, true)
-		if err != nil {
-			return err
-		}
-		return filesrw.EditFile(canon, editOld, editNew, editReplaceAll)
+		return filesrw.EditFile(access, args[0], cwd, editOld, editNew, editReplaceAll)
 	},
 }
 
@@ -198,15 +166,11 @@ var patchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(args[0], cwd, true)
-		if err != nil {
-			return err
-		}
 		diff, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fmt.Errorf("failed to read diff from stdin: %w", err)
 		}
-		return filesrw.PatchFile(canon, string(diff))
+		return filesrw.PatchFile(access, args[0], cwd, string(diff))
 	},
 }
 
@@ -228,11 +192,7 @@ var listCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		canon, err := access.Resolve(target, cwd, false)
-		if err != nil {
-			return err
-		}
-		out, err := filesrw.ListDir(canon, listLong, listAll, listRecursive)
+		out, err := filesrw.ListDir(access, target, cwd, listLong, listAll, listRecursive)
 		if err != nil {
 			return err
 		}

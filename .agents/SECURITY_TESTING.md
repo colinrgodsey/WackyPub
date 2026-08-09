@@ -50,19 +50,18 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 
 ## Checklist
 
-- **`n` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
+- **`?` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
   copy/move/delete/list gated by a per-directory `FILES_RW_ACCESS`
-  allowlist (see DECISIONS.md D22, D23, D24). Swarm-tested 2026-08-08
-  against commit `64f341f` (see
-  [`docs/files-rw-security-test.md`](../docs/files-rw-security-test.md)):
-  7 confirmed bypasses, most seriously a hardlink read that generalizes to
-  **cross-agent** file reads (one agent reading a *different* agent's
-  files, not just its own out-of-bounds ones) and a TOCTOU race between
-  `Access.Resolve()` and the actual I/O that needs no hardlink at all
-  (99-100% reliable). Root cause and fix shape recorded in D24; not fixed
-  in this pass - `.agents/TODOS.md` has the scoped fd-based rewrite. This
-  stays `n` (not reset to `?`) until that fix lands and a fresh swarm run
-  against it produces a new report.
+  allowlist (see DECISIONS.md D22-D26). The `n` report from the second
+  swarm run is deleted per the invalidation rule - D24's findings drove a
+  fix, revised once more per D26 (`go-gitdiff` for `patch`, a flat
+  `Nlink > 1` check for hardlinks). Verified directly since (not a swarm
+  pass, doesn't earn `y`/`n`): hardlink read, hardlink+copy, and
+  cross-agent hardlink read are all now denied cleanly; legitimate
+  read/edit/copy still work. The TOCTOU race from the second run is still
+  reproducible and, on reflection, isn't a `files-rw`-fixable bug at all -
+  see the "no-bash swarm re-test" entry in `TODOS.md`. Pending a fresh
+  swarm run against the current state.
 
 ## Not yet on this list
 

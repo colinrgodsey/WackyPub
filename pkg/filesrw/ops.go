@@ -3,10 +3,13 @@ package filesrw
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 )
 
 // isBinary is a cheap heuristic (matches most agent-harness Read tools):
@@ -22,12 +25,18 @@ func isBinary(data []byte) bool {
 // MaxReadSizeBytes is the maximum allowed byte size for a single read operation (200KB).
 const MaxReadSizeBytes = 200 * 1024
 
-// ReadFile returns canonPath's content, optionally restricted to the inclusive
+// ReadFile opens path via acc.OpenFile and returns its content, optionally restricted to the inclusive
 // 1-indexed [start, end] line range. If numbered is true, output is cat -n
 // formatted ("%6d\t%s\n"). If false, raw text is returned. If output exceeds
 // MaxReadSizeBytes, an error is returned suggesting line-based pagination.
-func ReadFile(canonPath string, start, end int, numbered bool) (string, error) {
-	data, err := os.ReadFile(canonPath)
+func ReadFile(acc *Access, path, cwd string, start, end int, numbered bool) (string, error) {
+	f, canonPath, err := acc.OpenFile(path, cwd, false, os.O_RDONLY, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
 	if err != nil {
 		return "", fmt.Errorf("failed to read %s: %w", canonPath, err)
 	}
@@ -90,22 +99,15 @@ func ReadFile(canonPath string, start, end int, numbered bool) (string, error) {
 	return out, nil
 }
 
-// WriteFile atomically overwrites (or creates) canonPath with content,
+// WriteFile atomically overwrites (or creates) path with content,
 // creating any missing parent directories first. Atomic via write-to-temp +
 // rename, so a crash mid-write never leaves a corrupted/partial file behind.
-//
-// This also happens to be what defeats a hardlink-to-FILES_RW_ACCESS attack
-// (confirmed live via swarm pen-test, see docs/files-rw-security-test.md): a
-// hardlink planted inside a writable root shares FILES_RW_ACCESS's inode but
-// passes Access.Resolve on its own (permitted) path, so an in-place write
-// through it would silently rewrite the real FILES_RW_ACCESS. Rename instead
-// replaces the writable root's directory entry with a new inode, severing
-// the hardlink before any bytes reach the original file. That's incidental
-// to why this function is atomic, not a deliberate hardlink defense - if
-// this ever changes to an in-place write (or gains a fast path that skips
-// the rename), that protection disappears with it. Don't remove the
-// temp+rename pattern without re-verifying this.
-func WriteFile(canonPath, content string) error {
+func WriteFile(acc *Access, path, cwd string, content string) error {
+	canonPath, err := acc.Resolve(path, cwd, true)
+	if err != nil {
+		return err
+	}
+
 	dir := filepath.Dir(canonPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create parent directory %s: %w", dir, err)
@@ -129,61 +131,93 @@ func WriteFile(canonPath, content string) error {
 	if err := os.Rename(tmpPath, canonPath); err != nil {
 		return fmt.Errorf("failed to finalize write to %s: %w", canonPath, err)
 	}
+
+	// Verify hardlink safety on finalized file
+	if info, err := os.Stat(canonPath); err == nil {
+		if err := acc.checkHardlinkSafety(info, true); err != nil {
+			_ = os.Remove(canonPath)
+			return fmt.Errorf("failed to finalize write to %s: %w", canonPath, err)
+		}
+	}
 	return nil
 }
 
-// CopyFile reads raw bytes from canonSrc and writes them to canonDst.
-func CopyFile(canonSrc, canonDst string) error {
-	data, err := os.ReadFile(canonSrc)
+// CopyFile reads raw bytes from srcPath using open file handles and writes them to dstPath.
+func CopyFile(acc *Access, srcPath, dstPath, cwd string) error {
+	srcFile, canonSrc, err := acc.OpenFile(srcPath, cwd, false, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	data, err := io.ReadAll(srcFile)
 	if err != nil {
 		return fmt.Errorf("failed to read source file %s: %w", canonSrc, err)
 	}
-	return WriteFile(canonDst, string(data))
+
+	return WriteFile(acc, dstPath, cwd, string(data))
 }
 
-// MoveFile moves canonSrc to canonDst using os.Rename, falling back to copy + delete
+// MoveFile moves srcPath to dstPath using os.Rename, falling back to copy + delete
 // if cross-device move is required.
-func MoveFile(canonSrc, canonDst string) error {
+func MoveFile(acc *Access, srcPath, dstPath, cwd string) error {
+	canonSrc, err := acc.Resolve(srcPath, cwd, true)
+	if err != nil {
+		return err
+	}
+	canonDst, err := acc.Resolve(dstPath, cwd, true)
+	if err != nil {
+		return err
+	}
+
 	dir := filepath.Dir(canonDst)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("failed to create parent directory %s: %w", dir, err)
 	}
 
-	err := os.Rename(canonSrc, canonDst)
+	err = os.Rename(canonSrc, canonDst)
 	if err == nil {
 		return nil
 	}
 
 	// Fallback for cross-device renames or filesystem boundaries
-	if err := CopyFile(canonSrc, canonDst); err != nil {
+	if err := CopyFile(acc, srcPath, dstPath, cwd); err != nil {
 		return fmt.Errorf("failed to move %s to %s: %w", canonSrc, canonDst, err)
 	}
-	if err := os.Remove(canonSrc); err != nil {
+	if err := DeleteFile(acc, srcPath, cwd); err != nil {
 		return fmt.Errorf("copied %s to %s but failed to remove original source: %w", canonSrc, canonDst, err)
 	}
 	return nil
 }
 
-// DeleteFile removes canonPath.
-func DeleteFile(canonPath string) error {
+// DeleteFile removes path after verifying access.
+func DeleteFile(acc *Access, path, cwd string) error {
+	canonPath, err := acc.Resolve(path, cwd, true)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(canonPath); err != nil {
 		return fmt.Errorf("failed to delete %s: %w", canonPath, err)
 	}
 	return nil
 }
 
-// EditFile replaces oldStr with newStr in canonPath. Unless replaceAll is
-// set, oldStr must appear exactly once - zero or multiple matches are
-// rejected rather than guessed at, so the caller can supply more
-// surrounding context instead of silently editing the wrong occurrence.
-func EditFile(canonPath, oldStr, newStr string, replaceAll bool) error {
+// EditFile replaces oldStr with newStr in path after reading through an open handle.
+func EditFile(acc *Access, path, cwd string, oldStr, newStr string, replaceAll bool) error {
 	if oldStr == "" {
 		return fmt.Errorf("old string must not be empty")
 	}
-	data, err := os.ReadFile(canonPath)
+
+	f, canonPath, err := acc.OpenFile(path, cwd, true, os.O_RDONLY, 0)
+	if err != nil {
+		return err
+	}
+	data, err := io.ReadAll(f)
+	f.Close()
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", canonPath, err)
 	}
+
 	if isBinary(data) {
 		return fmt.Errorf("%s looks like a binary file - refusing to edit it as text", canonPath)
 	}
@@ -204,69 +238,46 @@ func EditFile(canonPath, oldStr, newStr string, replaceAll bool) error {
 		updated = strings.Replace(content, oldStr, newStr, 1)
 	}
 
-	return WriteFile(canonPath, updated)
+	return WriteFile(acc, path, cwd, updated)
 }
 
-func isUnifiedDiff(diff string) bool {
-	hasMinusHeader := false
-	hasPlusHeader := false
-	hasHunkHeader := false
-	lines := strings.Split(diff, "\n")
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "--- ") || trimmed == "---" {
-			hasMinusHeader = true
-		}
-		if strings.HasPrefix(trimmed, "+++ ") || trimmed == "+++" {
-			hasPlusHeader = true
-		}
-		if strings.HasPrefix(trimmed, "@@") && strings.Contains(trimmed[2:], "@@") {
-			hasHunkHeader = true
-		}
-	}
-	return hasMinusHeader && hasPlusHeader && hasHunkHeader
-}
-
-// PatchFile applies a unified diff (read from diff) to canonPath by
-// shelling out to the system `patch` binary, writing its output to a temp
-// file first and renaming over canonPath only on success - so a malformed
-// or partially-applying diff never leaves canonPath half-patched.
-func PatchFile(canonPath string, diff string) error {
-	if !isUnifiedDiff(diff) {
-		return fmt.Errorf("patch rejected: input diff is not in unified diff format (must include \"---\", \"+++\", and \"@@\" hunk headers)")
-	}
-
-	if _, err := exec.LookPath("patch"); err != nil {
-		return fmt.Errorf("the \"patch\" command is not available on PATH: %w", err)
-	}
-
-	dir := filepath.Dir(canonPath)
-	tmp, err := os.CreateTemp(dir, ".files-rw-patch-*")
+// PatchFile applies a unified diff to path in memory using gitdiff.Parse and gitdiff.Apply,
+// reading through an open handle and writing atomically via WriteFile.
+func PatchFile(acc *Access, path, cwd string, diff string) error {
+	files, _, err := gitdiff.Parse(strings.NewReader(diff))
 	if err != nil {
-		return fmt.Errorf("failed to create temp file in %s: %w", dir, err)
+		return fmt.Errorf("patch rejected: invalid unified diff: %w", err)
 	}
-	tmpPath := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpPath)
-
-	cmd := exec.Command("patch", "-o", tmpPath, canonPath)
-	cmd.Stdin = strings.NewReader(diff)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("patch failed: %w: %s", err, stderr.String())
+	if len(files) == 0 {
+		return fmt.Errorf("patch rejected: diff contains no valid hunks or files")
 	}
 
-	if err := os.Rename(tmpPath, canonPath); err != nil {
-		return fmt.Errorf("failed to finalize patch to %s: %w", canonPath, err)
+	f, canonPath, err := acc.OpenFile(path, cwd, true, os.O_RDONLY, 0)
+	if err != nil {
+		return err
 	}
-	return nil
+	data, err := io.ReadAll(f)
+	f.Close()
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", canonPath, err)
+	}
+
+	var buf bytes.Buffer
+	if err := gitdiff.Apply(&buf, bytes.NewReader(data), files[0]); err != nil {
+		return fmt.Errorf("patch failed: %w", err)
+	}
+
+	return WriteFile(acc, path, cwd, buf.String())
 }
 
-// ListDir shells out to the system `ls` for canonPath, passing through only
-// a fixed set of recognized boolean flags (no raw argv passthrough, since
-// that would let extra positional path arguments slip past access control).
-func ListDir(canonPath string, long, all, recursive bool) (string, error) {
+// ListDir shells out to the system `ls` for path, passing through only
+// a fixed set of recognized boolean flags.
+func ListDir(acc *Access, path, cwd string, long, all, recursive bool) (string, error) {
+	canonPath, err := acc.Resolve(path, cwd, false)
+	if err != nil {
+		return "", err
+	}
+
 	if _, err := exec.LookPath("ls"); err != nil {
 		return "", fmt.Errorf("the \"ls\" command is not available on PATH: %w", err)
 	}

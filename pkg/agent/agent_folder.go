@@ -47,6 +47,14 @@ type ListScratchpadsResult struct {
 	Cap     int              `json:"cap"`
 }
 
+type SearchScratchpadArgs struct {
+	ID            string `json:"id" jsonschema_description:"Required scratchpad entry ID to search"`
+	Query         string `json:"query" jsonschema_description:"Search query string"`
+	CaseSensitive *bool  `json:"case_sensitive,omitempty" jsonschema_description:"Whether search is case-sensitive (default: true)"`
+	Regex         bool   `json:"regex,omitempty" jsonschema_description:"Opt-in to treat query as a regular expression (default: false)"`
+	MaxResults    int    `json:"max_results,omitempty" jsonschema_description:"Maximum number of matching lines to return (default: 50)"`
+}
+
 type ExecToolArgs struct {
 	Args  []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 	Env   map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
@@ -142,6 +150,18 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 		return nil, nil, fmt.Errorf("failed to create list_scratchpads tool: %w", err)
 	}
 	addTool(listTool)
+
+	// 4. search_scratchpad
+	searchTool, err := functiontool.New(functiontool.Config{
+		Name:        "search_scratchpad",
+		Description: "Search a specific scratchpad entry by ID for matching lines. Returns 1-indexed line numbers and precomputed skip_lines for get_scratchpad pagination.",
+	}, func(ctx agent.Context, args SearchScratchpadArgs) (*SearchScratchpadResult, error) {
+		return SearchScratchpad(agentDir, args.ID, args.Query, args.CaseSensitive, args.Regex, args.MaxResults)
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create search_scratchpad tool: %w", err)
+	}
+	addTool(searchTool)
 
 	// 3. Single generic run_command tool covering all discovered executables
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)

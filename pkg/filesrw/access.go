@@ -8,12 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
 	// AccessFileName is the exact filename (no upward search) that grants file
-	// access for the current directory. Its own path is always denied, even to
-	// a rule that would otherwise cover it.
+	// access for the current directory. Its own path is always denied for write/mutation.
 	AccessFileName = "FILES_RW_ACCESS"
 
 	rulePrefixWrite = "w:"
@@ -28,6 +28,7 @@ type Access struct {
 	writableRoots []string
 	readableRoots []string // superset of writableRoots
 	denyPath      string   // FILES_RW_ACCESS's own canonical path
+	denyFileInfo  os.FileInfo
 }
 
 // LoadAccess reads and parses <cwd>/FILES_RW_ACCESS. Returns an error
@@ -45,12 +46,20 @@ func LoadAccess(cwd string) (*Access, error) {
 	}
 	defer f.Close()
 
+	denyFileInfo, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat %s: %w", AccessFileName, err)
+	}
+
 	denyPath, err := filepath.EvalSymlinks(accessFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve %s's own path: %w", AccessFileName, err)
 	}
 
-	acc := &Access{denyPath: denyPath}
+	acc := &Access{
+		denyPath:     denyPath,
+		denyFileInfo: denyFileInfo,
+	}
 
 	scanner := bufio.NewScanner(f)
 	lineNo := 0
@@ -77,13 +86,7 @@ func LoadAccess(cwd string) (*Access, error) {
 			return nil, fmt.Errorf("%s line %d: rule has no path", AccessFileName, lineNo)
 		}
 
-		// A w: root is allowed to not exist yet - write auto-creates missing
-		// parent directories within it, so requiring the root to pre-exist
-		// would make that feature unreachable for a brand-new output
-		// directory. r: has no such use case, so it stays strict: a
-		// read-only grant pointing at nothing is almost always a typo worth
-		// catching immediately.
-		root, err := canonicalizeRoot(rest, cwd, !writable)
+		root, err := canonicalizeRoot(rest, cwd, writable)
 		if err != nil {
 			return nil, fmt.Errorf("%s line %d: %w", AccessFileName, lineNo, err)
 		}
@@ -101,19 +104,14 @@ func LoadAccess(cwd string) (*Access, error) {
 }
 
 // canonicalizeRoot resolves a FILES_RW_ACCESS rule's path to a canonical
-// absolute path. When mustExist is true, the root must already exist on
-// disk - a rule pointing at nothing is a config mistake worth failing on
-// immediately rather than silently granting access to nothing. When false
-// (used for w: rules), resolution falls back to canonicalizeTarget's
-// nearest-existing-ancestor logic, so a writable root can point at a
-// directory that doesn't exist yet - required for write's auto-mkdir to
-// ever be reachable for a brand-new output directory.
-func canonicalizeRoot(path, cwd string, mustExist bool) (string, error) {
-	if !mustExist {
-		return canonicalizeTarget(path, cwd)
-	}
+// absolute path. A r: root must exist; a w: root may not exist yet, in which case
+// its existing ancestor directory is canonicalized.
+func canonicalizeRoot(path, cwd string, writable bool) (string, error) {
 	if strings.Contains(path, tildeChar) {
 		return "", fmt.Errorf("path %q contains %q - not supported, use an absolute path", path, tildeChar)
+	}
+	if writable {
+		return canonicalizeTarget(path, cwd)
 	}
 	abs := path
 	if !filepath.IsAbs(abs) {
@@ -179,10 +177,93 @@ func withinRoot(path, root string) bool {
 	return strings.HasPrefix(path, rootWithSep)
 }
 
+func getNlinkAndDevIno(info os.FileInfo) (nlink uint64, dev uint64, ino uint64, ok bool) {
+	if info == nil {
+		return 0, 0, 0, false
+	}
+	stat, sysOk := info.Sys().(*syscall.Stat_t)
+	if !sysOk {
+		return 0, 0, 0, false
+	}
+	return uint64(stat.Nlink), uint64(stat.Dev), uint64(stat.Ino), true
+}
+
+func (a *Access) checkHardlinkSafety(info os.FileInfo, needWrite bool) error {
+	if info == nil || info.IsDir() {
+		return nil
+	}
+
+	// Check if this inode matches FILES_RW_ACCESS
+	if a.denyFileInfo != nil && os.SameFile(info, a.denyFileInfo) {
+		if needWrite {
+			return fmt.Errorf("access to %s itself is always denied", AccessFileName)
+		}
+		return nil
+	}
+
+	nlink, _, _, ok := getNlinkAndDevIno(info)
+	if ok && nlink > 1 {
+		return fmt.Errorf("hardlink target has %d links - access denied for multi-linked files", nlink)
+	}
+	return nil
+}
+
+// OpenFile validates path (relative to cwd) against a's access rules, opens the target
+// file descriptor atomically, and verifies file identity and hardlink safety on the open handle.
+func (a *Access) OpenFile(path, cwd string, needWrite bool, flag int, perm os.FileMode) (*os.File, string, error) {
+	canon, err := canonicalizeTarget(path, cwd)
+	if err != nil {
+		return nil, "", err
+	}
+
+	roots := a.readableRoots
+	verb, rule := "read", "r:"
+	if needWrite {
+		roots = a.writableRoots
+		verb, rule = "write", "w:"
+	}
+
+	isAllowedRoot := false
+	for _, root := range roots {
+		if withinRoot(canon, root) {
+			isAllowedRoot = true
+			break
+		}
+	}
+	if !isAllowedRoot {
+		return nil, "", fmt.Errorf("%s access denied for %q - not covered by any %q rule in %s", verb, path, rule, AccessFileName)
+	}
+
+	f, err := os.OpenFile(canon, flag, perm)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to open %s: %w", path, err)
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, "", fmt.Errorf("failed to stat open file %s: %w", path, err)
+	}
+
+	if a.denyFileInfo != nil && os.SameFile(info, a.denyFileInfo) {
+		if needWrite {
+			f.Close()
+			return nil, "", fmt.Errorf("access to %s itself is always denied", AccessFileName)
+		}
+		return f, canon, nil
+	}
+
+	if err := a.checkHardlinkSafety(info, needWrite); err != nil {
+		f.Close()
+		return nil, "", fmt.Errorf("access denied for %q: %w", path, err)
+	}
+
+	return f, canon, nil
+}
+
 // Resolve validates path (relative to cwd) against a's rules and returns its
 // canonical form on success. needWrite selects which rule set (w: vs r:/w:)
-// must cover it. FILES_RW_ACCESS's own path is always denied, regardless of
-// needWrite or any rule that would otherwise cover it.
+// must cover it. FILES_RW_ACCESS's own path is denied for writing/mutation.
 func (a *Access) Resolve(path, cwd string, needWrite bool) (string, error) {
 	canon, err := canonicalizeTarget(path, cwd)
 	if err != nil {
@@ -190,12 +271,6 @@ func (a *Access) Resolve(path, cwd string, needWrite bool) (string, error) {
 	}
 
 	if canon == a.denyPath {
-		// Reading the access file itself is always allowed - it's the only
-		// way an agent can introspect its own grant instead of rediscovering
-		// it through trial and error (confirmed live: this is exactly what
-		// happened without it). Mutating it is a different story - that's
-		// the actual privilege-escalation risk this denies unconditionally,
-		// regardless of any rule that would otherwise cover it.
 		if needWrite {
 			return "", fmt.Errorf("access to %s itself is always denied", AccessFileName)
 		}
@@ -210,6 +285,11 @@ func (a *Access) Resolve(path, cwd string, needWrite bool) (string, error) {
 	}
 	for _, root := range roots {
 		if withinRoot(canon, root) {
+			if info, err := os.Stat(canon); err == nil {
+				if err := a.checkHardlinkSafety(info, needWrite); err != nil {
+					return "", fmt.Errorf("access denied for %q: %w", path, err)
+				}
+			}
 			return canon, nil
 		}
 	}

@@ -207,6 +207,7 @@ You are Ignis, an ancient wizard.
 - **`create_scratchpad(text: string)`**: Stores `text` under a freshly generated 4-character ID (`[0-9a-z]`), returning `{id, seq, size}`. Automatically evicts the entry with the lowest `seq` when live entries exceed cap (50).
 - **`get_scratchpad(id: string, skip_lines?: int, num_lines?: int)`**: Retrieves stored text by ID, optionally paginated by line range.
 - **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (ID, seq, size, created_by, created_at) and capacity usage.
+- **`search_scratchpad(id: string, query: string, case_sensitive?: bool, regex?: bool, max_results?: int)`**: Searches a specific scratchpad entry by ID for matching lines (see DECISIONS.md D25). Returns 1-indexed line numbers, precomputed `skip_lines` for `get_scratchpad` pagination, and truncated line text (~200 chars), with total match counts reported separately.
 - **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` server-side before process execution. Arguments exceeding 500,000 bytes after expansion fail fast.
 - **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>`.
 

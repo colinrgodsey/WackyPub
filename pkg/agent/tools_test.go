@@ -70,12 +70,12 @@ func TestBuildFolderAgentTools(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, run_command, load_skill (5 tools)
-	if len(toolMap) != 5 {
-		t.Errorf("expected 5 tools, got %d", len(toolMap))
+	// Should contain create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, run_command, load_skill (6 tools)
+	if len(toolMap) != 6 {
+		t.Errorf("expected 6 tools, got %d", len(toolMap))
 	}
-	if len(decls) != 5 {
-		t.Errorf("expected 5 decls, got %d", len(decls))
+	if len(decls) != 6 {
+		t.Errorf("expected 6 decls, got %d", len(decls))
 	}
 	if _, ok := toolMap["create_scratchpad"]; !ok {
 		t.Errorf("missing create_scratchpad in toolMap")
@@ -239,12 +239,12 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 		t.Fatalf("BuildFolderAgentTools failed: %v", err)
 	}
 
-	// 5 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, run_command, load_skill
-	if len(toolMap) != 5 {
-		t.Fatalf("expected 5 tools in toolMap, got %d", len(toolMap))
+	// 6 tools in toolMap: create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, run_command, load_skill
+	if len(toolMap) != 6 {
+		t.Fatalf("expected 6 tools in toolMap, got %d", len(toolMap))
 	}
-	if len(decls) != 5 {
-		t.Fatalf("expected 5 decls, got %d", len(decls))
+	if len(decls) != 6 {
+		t.Fatalf("expected 6 decls, got %d", len(decls))
 	}
 
 	runCmdTool, ok := toolMap["run_command"]
@@ -304,5 +304,60 @@ func TestRunCommandToolValidationAndExecution(t *testing.T) {
 	}
 	if !foundOutput {
 		t.Errorf("expected to find FunctionResponse containing 'echo: world' in session.jsonl")
+	}
+}
+
+func TestSearchScratchpad(t *testing.T) {
+	agentDir := t.TempDir()
+
+	text := "Line 1: Alpha\nLine 2: Beta\nLine 3: ALPHA\nLine 4: Gamma\nLine 5: alpha delta\n"
+	entry, err := CreateScratchpad(agentDir, text, "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	// 1. Literal case-sensitive search for "Alpha"
+	resCase, err := SearchScratchpad(agentDir, entry.ID, "Alpha", nil, false, 50)
+	if err != nil {
+		t.Fatalf("SearchScratchpad case-sensitive failed: %v", err)
+	}
+	if resCase.TotalMatches != 1 {
+		t.Errorf("expected 1 match for 'Alpha', got %d", resCase.TotalMatches)
+	}
+	if len(resCase.Matches) > 0 {
+		if resCase.Matches[0].Line != 1 || resCase.Matches[0].SkipLines != 0 {
+			t.Errorf("expected match line 1, skip_lines 0, got line %d, skip_lines %d", resCase.Matches[0].Line, resCase.Matches[0].SkipLines)
+		}
+	}
+
+	// 2. Case-insensitive search for "alpha"
+	caseSensFalse := false
+	resNoCase, err := SearchScratchpad(agentDir, entry.ID, "alpha", &caseSensFalse, false, 50)
+	if err != nil {
+		t.Fatalf("SearchScratchpad case-insensitive failed: %v", err)
+	}
+	if resNoCase.TotalMatches != 3 {
+		t.Errorf("expected 3 matches for case-insensitive 'alpha', got %d", resNoCase.TotalMatches)
+	}
+
+	// 3. Regex search for "Alpha|Beta"
+	resRegex, err := SearchScratchpad(agentDir, entry.ID, "Alpha|Beta", nil, true, 50)
+	if err != nil {
+		t.Fatalf("SearchScratchpad regex failed: %v", err)
+	}
+	if resRegex.TotalMatches != 2 {
+		t.Errorf("expected 2 matches for regex 'Alpha|Beta', got %d", resRegex.TotalMatches)
+	}
+
+	// 4. Max results capping
+	resCap, err := SearchScratchpad(agentDir, entry.ID, "alpha", &caseSensFalse, false, 2)
+	if err != nil {
+		t.Fatalf("SearchScratchpad capped failed: %v", err)
+	}
+	if resCap.TotalMatches != 3 {
+		t.Errorf("expected total_matches 3, got %d", resCap.TotalMatches)
+	}
+	if len(resCap.Matches) != 2 {
+		t.Errorf("expected len(Matches) 2 due to cap, got %d", len(resCap.Matches))
 	}
 }

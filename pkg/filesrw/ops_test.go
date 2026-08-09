@@ -7,8 +7,27 @@ import (
 	"testing"
 )
 
+func helperSetupAccess(t *testing.T) (string, *Access) {
+	tempDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to eval symlinks for tempDir: %v", err)
+	}
+
+	accessContent := "w: .\n"
+	accessFile := filepath.Join(tempDir, AccessFileName)
+	if err := os.WriteFile(accessFile, []byte(accessContent), 0o600); err != nil {
+		t.Fatalf("failed to write access file: %v", err)
+	}
+
+	acc, err := LoadAccess(tempDir)
+	if err != nil {
+		t.Fatalf("LoadAccess failed: %v", err)
+	}
+	return tempDir, acc
+}
+
 func TestReadFile(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir, acc := helperSetupAccess(t)
 	filePath := filepath.Join(tempDir, "sample.txt")
 	content := "line 1\nline 2\nline 3\nline 4\n"
 	if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
@@ -16,7 +35,7 @@ func TestReadFile(t *testing.T) {
 	}
 
 	// 1. Default unnumbered raw read
-	rawOut, err := ReadFile(filePath, 0, 0, false)
+	rawOut, err := ReadFile(acc, "sample.txt", tempDir, 0, 0, false)
 	if err != nil {
 		t.Fatalf("ReadFile raw failed: %v", err)
 	}
@@ -25,7 +44,7 @@ func TestReadFile(t *testing.T) {
 	}
 
 	// 2. Numbered read (cat -n style: %6d\t%s)
-	numberedOut, err := ReadFile(filePath, 0, 0, true)
+	numberedOut, err := ReadFile(acc, "sample.txt", tempDir, 0, 0, true)
 	if err != nil {
 		t.Fatalf("ReadFile numbered failed: %v", err)
 	}
@@ -35,7 +54,7 @@ func TestReadFile(t *testing.T) {
 	}
 
 	// 3. Line range [2, 3] unnumbered
-	outRange, err := ReadFile(filePath, 2, 3, false)
+	outRange, err := ReadFile(acc, "sample.txt", tempDir, 2, 3, false)
 	if err != nil {
 		t.Fatalf("ReadFile range failed: %v", err)
 	}
@@ -53,7 +72,7 @@ func TestReadFile(t *testing.T) {
 	if err := os.WriteFile(largePath, largeData, 0o600); err != nil {
 		t.Fatalf("failed to write large file: %v", err)
 	}
-	_, err = ReadFile(largePath, 0, 0, false)
+	_, err = ReadFile(acc, "large.txt", tempDir, 0, 0, false)
 	if err == nil || !strings.Contains(err.Error(), "exceeds the 204800 byte read limit") {
 		t.Errorf("expected read size cap error, got %v", err)
 	}
@@ -64,45 +83,84 @@ func TestReadFile(t *testing.T) {
 	if err := os.WriteFile(binPath, binContent, 0o600); err != nil {
 		t.Fatalf("failed to write binary file: %v", err)
 	}
-	_, err = ReadFile(binPath, 0, 0, false)
+	_, err = ReadFile(acc, "sample.bin", tempDir, 0, 0, false)
 	if err == nil || !strings.Contains(err.Error(), "binary file") {
 		t.Errorf("expected binary file error, got %v", err)
+	}
+
+	// 6. Reading FILES_RW_ACCESS itself is allowed (D24 Addendum)
+	accFileContent, err := ReadFile(acc, AccessFileName, tempDir, 0, 0, false)
+	if err != nil {
+		t.Fatalf("expected reading %s to succeed, got %v", AccessFileName, err)
+	}
+	if accFileContent != "w: .\n" {
+		t.Errorf("got %q, expected %q", accFileContent, "w: .\n")
+	}
+}
+
+func TestHardlinkReadBypassRejection(t *testing.T) {
+	tempDir, acc := helperSetupAccess(t)
+
+	// Create an external secret file outside the allowed root
+	outsideDir := t.TempDir()
+	secretFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(secretFile, []byte("super_secret_key"), 0o600); err != nil {
+		t.Fatalf("failed to create secret file: %v", err)
+	}
+
+	// Hardlink the external secret file into allowed root
+	hlPath := filepath.Join(tempDir, "hl_secret.txt")
+	if err := os.Link(secretFile, hlPath); err != nil {
+		t.Fatalf("failed to create hardlink: %v", err)
+	}
+
+	// Attempting to read hardlink must be rejected!
+	_, err := ReadFile(acc, "hl_secret.txt", tempDir, 0, 0, false)
+	if err == nil || !strings.Contains(err.Error(), "hardlink target has") {
+		t.Errorf("expected cross-root hardlink read rejection, got: %v", err)
 	}
 }
 
 func TestWriteFile(t *testing.T) {
-	tempDir := t.TempDir()
-	nestedPath := filepath.Join(tempDir, "sub", "dir", "output.txt")
+	tempDir, acc := helperSetupAccess(t)
+	nestedRel := filepath.Join("sub", "dir", "output.txt")
 
 	content := "hello world\n"
-	if err := WriteFile(nestedPath, content); err != nil {
+	if err := WriteFile(acc, nestedRel, tempDir, content); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	readBack, err := os.ReadFile(nestedPath)
+	fullPath := filepath.Join(tempDir, nestedRel)
+	readBack, err := os.ReadFile(fullPath)
 	if err != nil {
 		t.Fatalf("failed to read back written file: %v", err)
 	}
 	if string(readBack) != content {
 		t.Errorf("got %q, expected %q", string(readBack), content)
 	}
+
+	// Writing to FILES_RW_ACCESS itself must be denied
+	err = WriteFile(acc, AccessFileName, tempDir, "hacked\n")
+	if err == nil || !strings.Contains(err.Error(), "always denied") {
+		t.Errorf("expected writing to FILES_RW_ACCESS to be denied, got %v", err)
+	}
 }
 
 func TestCopyFile(t *testing.T) {
-	tempDir := t.TempDir()
-	src := filepath.Join(tempDir, "src.txt")
-	dst := filepath.Join(tempDir, "sub", "dst.txt")
+	tempDir, acc := helperSetupAccess(t)
+	src := "src.txt"
+	dst := filepath.Join("sub", "dst.txt")
 	content := "copy test bytes\n"
 
-	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, src), []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write src: %v", err)
 	}
 
-	if err := CopyFile(src, dst); err != nil {
+	if err := CopyFile(acc, src, dst, tempDir); err != nil {
 		t.Fatalf("CopyFile failed: %v", err)
 	}
 
-	readBack, err := os.ReadFile(dst)
+	readBack, err := os.ReadFile(filepath.Join(tempDir, dst))
 	if err != nil {
 		t.Fatalf("failed to read dst: %v", err)
 	}
@@ -112,24 +170,24 @@ func TestCopyFile(t *testing.T) {
 }
 
 func TestMoveFile(t *testing.T) {
-	tempDir := t.TempDir()
-	src := filepath.Join(tempDir, "move_src.txt")
-	dst := filepath.Join(tempDir, "sub", "move_dst.txt")
+	tempDir, acc := helperSetupAccess(t)
+	src := "move_src.txt"
+	dst := filepath.Join("sub", "move_dst.txt")
 	content := "move test bytes\n"
 
-	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(tempDir, src), []byte(content), 0o600); err != nil {
 		t.Fatalf("failed to write src: %v", err)
 	}
 
-	if err := MoveFile(src, dst); err != nil {
+	if err := MoveFile(acc, src, dst, tempDir); err != nil {
 		t.Fatalf("MoveFile failed: %v", err)
 	}
 
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(tempDir, src)); !os.IsNotExist(err) {
 		t.Errorf("expected source file to be removed after move")
 	}
 
-	readBack, err := os.ReadFile(dst)
+	readBack, err := os.ReadFile(filepath.Join(tempDir, dst))
 	if err != nil {
 		t.Fatalf("failed to read dst: %v", err)
 	}
@@ -139,73 +197,76 @@ func TestMoveFile(t *testing.T) {
 }
 
 func TestDeleteFile(t *testing.T) {
-	tempDir := t.TempDir()
-	target := filepath.Join(tempDir, "delete_me.txt")
-	if err := os.WriteFile(target, []byte("temp"), 0o600); err != nil {
+	tempDir, acc := helperSetupAccess(t)
+	target := "delete_me.txt"
+	fullPath := filepath.Join(tempDir, target)
+	if err := os.WriteFile(fullPath, []byte("temp"), 0o600); err != nil {
 		t.Fatalf("failed to write target: %v", err)
 	}
 
-	if err := DeleteFile(target); err != nil {
+	if err := DeleteFile(acc, target, tempDir); err != nil {
 		t.Fatalf("DeleteFile failed: %v", err)
 	}
 
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
+	if _, err := os.Stat(fullPath); !os.IsNotExist(err) {
 		t.Errorf("expected file to be deleted")
 	}
 }
 
 func TestEditFile(t *testing.T) {
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "edit.txt")
+	tempDir, acc := helperSetupAccess(t)
+	filePath := "edit.txt"
+	fullPath := filepath.Join(tempDir, filePath)
 
 	initial := "foo bar foo baz\n"
-	if err := os.WriteFile(filePath, []byte(initial), 0o600); err != nil {
+	if err := os.WriteFile(fullPath, []byte(initial), 0o600); err != nil {
 		t.Fatalf("failed to write edit file: %v", err)
 	}
 
 	// Empty old string
-	if err := EditFile(filePath, "", "new", false); err == nil {
+	if err := EditFile(acc, filePath, tempDir, "", "new", false); err == nil {
 		t.Errorf("expected error for empty old string, got nil")
 	}
 
 	// Zero match
-	if err := EditFile(filePath, "nonexistent", "new", false); err == nil {
+	if err := EditFile(acc, filePath, tempDir, "nonexistent", "new", false); err == nil {
 		t.Errorf("expected error for zero matches, got nil")
 	}
 
 	// Multiple matches without replaceAll
-	if err := EditFile(filePath, "foo", "new", false); err == nil {
+	if err := EditFile(acc, filePath, tempDir, "foo", "new", false); err == nil {
 		t.Errorf("expected error for multiple matches without replaceAll, got nil")
 	}
 
 	// Multiple matches with replaceAll
-	if err := EditFile(filePath, "foo", "QUX", true); err != nil {
+	if err := EditFile(acc, filePath, tempDir, "foo", "QUX", true); err != nil {
 		t.Fatalf("EditFile with replaceAll failed: %v", err)
 	}
-	readBack, _ := os.ReadFile(filePath)
+	readBack, _ := os.ReadFile(fullPath)
 	if string(readBack) != "QUX bar QUX baz\n" {
 		t.Errorf("got %q, expected QUX bar QUX baz", string(readBack))
 	}
 
 	// Single match replacement
-	if err := EditFile(filePath, "bar", "FOO", false); err != nil {
+	if err := EditFile(acc, filePath, tempDir, "bar", "FOO", false); err != nil {
 		t.Fatalf("EditFile single match failed: %v", err)
 	}
-	readBackSingle, _ := os.ReadFile(filePath)
+	readBackSingle, _ := os.ReadFile(fullPath)
 	if string(readBackSingle) != "QUX FOO QUX baz\n" {
 		t.Errorf("got %q, expected QUX FOO QUX baz", string(readBackSingle))
 	}
 }
 
 func TestPatchFile(t *testing.T) {
-	tempDir := t.TempDir()
-	filePath := filepath.Join(tempDir, "patch_target.txt")
-	if err := os.WriteFile(filePath, []byte("line 1\nline 2\nline 3\n"), 0o600); err != nil {
+	tempDir, acc := helperSetupAccess(t)
+	filePath := "patch_target.txt"
+	fullPath := filepath.Join(tempDir, filePath)
+	if err := os.WriteFile(fullPath, []byte("line 1\nline 2\nline 3\n"), 0o600); err != nil {
 		t.Fatalf("failed to write patch target: %v", err)
 	}
 
 	// Non-unified diff rejected
-	if err := PatchFile(filePath, "invalid diff format"); err == nil {
+	if err := PatchFile(acc, filePath, tempDir, "invalid diff format"); err == nil {
 		t.Errorf("expected non-unified diff to be rejected, got nil")
 	}
 
@@ -220,11 +281,11 @@ func TestPatchFile(t *testing.T) {
 		" line 3",
 	}, "\n") + "\n"
 
-	if err := PatchFile(filePath, diff); err != nil {
+	if err := PatchFile(acc, filePath, tempDir, diff); err != nil {
 		t.Fatalf("PatchFile failed: %v", err)
 	}
 
-	readBack, _ := os.ReadFile(filePath)
+	readBack, _ := os.ReadFile(fullPath)
 	expected := "line 1\nline TWO\nline 3\n"
 	if string(readBack) != expected {
 		t.Errorf("got %q, expected %q", string(readBack), expected)
@@ -232,13 +293,13 @@ func TestPatchFile(t *testing.T) {
 }
 
 func TestListDir(t *testing.T) {
-	tempDir := t.TempDir()
+	tempDir, acc := helperSetupAccess(t)
 	file1 := filepath.Join(tempDir, "alpha.txt")
 	if err := os.WriteFile(file1, []byte("content"), 0o600); err != nil {
 		t.Fatalf("failed to write alpha: %v", err)
 	}
 
-	out, err := ListDir(tempDir, false, false, false)
+	out, err := ListDir(acc, ".", tempDir, false, false, false)
 	if err != nil {
 		t.Fatalf("ListDir failed: %v", err)
 	}
