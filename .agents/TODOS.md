@@ -53,18 +53,48 @@ factoring compaction behind some kind of strategy interface/config knob
 instead of the one fixed implementation, once a second real use case for
 a different strategy actually shows up.
 
-## Real unit test coverage for compaction prefix preservation
+## Compaction bypasses the runner pipeline - almost certainly breaks prompt-cache prefix reuse in practice
 
 `TestCompactionPrefixPreservation` (`pkg/agent/compaction_test.go`) is
 misleadingly named - it only checks that `MEMORY.md` still exists after a
-compaction call that fails against a fake HTTP endpoint. It does not
-actually verify that compaction preserves the request prefix: the same
-system prompt, the same tool declarations, and the same initial portion
-of turns before and after compaction runs, with only the archived middle
-replaced by the memory addendum. A real test would need to capture the
-outgoing wire payload (httptest, same pattern as `openai_model_test.go`'s
-reasoning-egress tests) before and after a compaction cycle and diff the
-surviving prefix.
+compaction call that fails against a fake HTTP endpoint, not that the
+request prefix is actually preserved. Traced through the real code path
+(not just untested, actually confirmed wrong): `CheckAndCompactSession`
+(`pkg/agent/compaction.go`) calls `llmModel.GenerateContent` directly with
+a hand-built `&model.LLMRequest{Model: ..., Contents: contents}` - it
+never goes through `runner.Runner`/the agent's `llmagent` (D19), the same
+pipeline every normal `GenerateTurn` call uses. Two concrete consequences:
+
+1. **No `Tools` on the compaction request at all.** Normal generation
+   always includes the agent's real tool declarations (`create_scratchpad`,
+   `run_command`, etc. - every agent has at least the built-ins).
+   Compaction's `LLMRequest` never sets `Config`/`Tools`, so it sends none.
+2. **The system prompt is glued into the first user turn's literal text**
+   (`firstTurnText := systemPrompt + "\n\n" + memTurnText`) instead of
+   going through whatever system-instruction mechanism the provider
+   adapter normally uses for it (a dedicated field on most providers -
+   Anthropic's `system` param, Gemini's `systemInstruction`, etc., not
+   the first message in the array).
+
+Provider-side prompt caching is keyed on the literal wire-level prefix,
+which for most providers includes the tool declarations array and the
+system-instruction field, not just the conversation turns. A request
+missing the tools array entirely, with the system prompt sitting somewhere
+completely different in the payload, is a structurally different request
+from every normal generation call - it can't share a cached prefix with
+them no matter how carefully the turn *contents* are preserved. The
+function's own doc comment ("preserving the exact session prefix to
+optimize prompt caching") only holds for the turns portion; in the normal
+case (any agent with real tools, which is all of them), it doesn't hold
+for the request as a whole.
+
+Real fix needs to route compaction through the same `ADKAgent`/runner
+path normal generation uses (or otherwise construct the request with the
+same `Tools`/system-instruction handling a real call would use), not just
+a test - a test alone would just keep confirming the same wrong behavior.
+Once fixed, the httptest-based wire-payload test this TODO originally
+asked for (same pattern as `openai_model_test.go`'s reasoning-egress
+tests) is what should verify it going forward.
 
 ## How compaction should treat loaded skills
 
@@ -255,4 +285,31 @@ Next full swarm run against `files-rw` should try giving workers *only* `files-r
 ## Scratchpad Diff & Patch Verification
 
 Running `diff -u` over two scratchpad entries (`<SCRATCHPAD_DATA id="before" />` vs `<SCRATCHPAD_DATA id="after" />`) to auto-capture diffs and verify code edits out-of-band. Allows agents to preview, validate, and summarize patch changes out-of-band with zero token generation overhead.
+
+## `MEMORY.md` grows forever - no consolidation, only ever appended to
+
+`WriteMemoryFile`'s call site in `CheckAndCompactSession` (`pkg/agent/compaction.go`)
+is an unconditional append every compaction cycle - `newMemory + "\n\n" +
+addendum`, no cap, nothing that ever revisits or re-summarizes what's
+already there. For a short-lived agent this is fine; for one that runs
+long enough to compact repeatedly (weeks/months of real use, exactly the
+case compaction exists for), `MEMORY.md` itself grows linearly with the
+number of compaction cycles, with no bound. Eventually `MEMORY.md` becomes
+the token-budget problem compaction was built to avoid in the first place
+- it's sent in full on every single generation call (`FormatPersistentMemoryTurn`,
+User Turn 1), so an ever-growing memory file directly inflates every
+request's prefix forever, not just the turns that get archived.
+
+Needs some kind of periodic re-consolidation: an occasional pass that
+takes the accumulated `MEMORY.md` itself (not just newly-archived turns)
+and re-summarizes/prunes it - collapsing superseded entries (some of this
+already happens ad-hoc via the "STATE UPDATES & INVALIDATION" guideline in
+`CompactionDirectivePrompt`, but that only ever adds an "UPDATED:" line
+next to the old one, it doesn't remove the old one), dropping anything no
+longer relevant, keeping it bounded. No design yet on the trigger (its own
+size/token threshold, separate from `sessionCompactPct`? every Nth
+compaction?) or how aggressive it should be about actually discarding
+history versus just compressing it - worth designing before some
+long-running agent actually hits this, rather than discovered live the
+way most of this project's other gaps have been.
 
