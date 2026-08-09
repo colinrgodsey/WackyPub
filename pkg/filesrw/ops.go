@@ -19,16 +19,27 @@ func isBinary(data []byte) bool {
 	return bytes.IndexByte(sample, 0) != -1
 }
 
-// ReadFile returns canonPath's content as newline-joined "<line>\t<text>"
-// entries (cat -n style), optionally restricted to the inclusive 1-indexed
-// [start, end] line range. start/end of 0 means "unbounded" on that side.
-func ReadFile(canonPath string, start, end int) (string, error) {
+// MaxReadSizeBytes is the maximum allowed byte size for a single read operation (200KB).
+const MaxReadSizeBytes = 200 * 1024
+
+// ReadFile returns canonPath's content, optionally restricted to the inclusive
+// 1-indexed [start, end] line range. If numbered is true, output is cat -n
+// formatted ("%6d\t%s\n"). If false, raw text is returned. If output exceeds
+// MaxReadSizeBytes, an error is returned suggesting line-based pagination.
+func ReadFile(canonPath string, start, end int, numbered bool) (string, error) {
 	data, err := os.ReadFile(canonPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read %s: %w", canonPath, err)
 	}
 	if isBinary(data) {
 		return "", fmt.Errorf("%s looks like a binary file - refusing to read it as text", canonPath)
+	}
+
+	if start == 0 && end == 0 && !numbered {
+		if len(data) > MaxReadSizeBytes {
+			return "", fmt.Errorf("%s size is %d bytes, which exceeds the %d byte read limit - use --start and --end for line pagination", canonPath, len(data), MaxReadSizeBytes)
+		}
+		return string(data), nil
 	}
 
 	lines := strings.Split(string(data), "\n")
@@ -56,11 +67,27 @@ func ReadFile(canonPath string, start, end int) (string, error) {
 		return "", nil
 	}
 
+	if !numbered {
+		selected := lines[from-1 : to]
+		totalBytes := 0
+		for _, l := range selected {
+			totalBytes += len(l) + 1
+		}
+		if totalBytes > MaxReadSizeBytes {
+			return "", fmt.Errorf("%s selected range lines %d..%d is %d bytes, which exceeds the %d byte read limit - use --start and --end for line pagination", canonPath, from, to, totalBytes, MaxReadSizeBytes)
+		}
+		return strings.Join(selected, "\n") + "\n", nil
+	}
+
 	var b strings.Builder
 	for i := from; i <= to; i++ {
-		fmt.Fprintf(&b, "%d\t%s\n", i, lines[i-1])
+		fmt.Fprintf(&b, "%6d\t%s\n", i, lines[i-1])
 	}
-	return b.String(), nil
+	out := b.String()
+	if len(out) > MaxReadSizeBytes {
+		return "", fmt.Errorf("%s formatted output is %d bytes, which exceeds the %d byte read limit - use --start and --end for line pagination", canonPath, len(out), MaxReadSizeBytes)
+	}
+	return out, nil
 }
 
 // WriteFile atomically overwrites (or creates) canonPath with content,
@@ -105,6 +132,46 @@ func WriteFile(canonPath, content string) error {
 	return nil
 }
 
+// CopyFile reads raw bytes from canonSrc and writes them to canonDst.
+func CopyFile(canonSrc, canonDst string) error {
+	data, err := os.ReadFile(canonSrc)
+	if err != nil {
+		return fmt.Errorf("failed to read source file %s: %w", canonSrc, err)
+	}
+	return WriteFile(canonDst, string(data))
+}
+
+// MoveFile moves canonSrc to canonDst using os.Rename, falling back to copy + delete
+// if cross-device move is required.
+func MoveFile(canonSrc, canonDst string) error {
+	dir := filepath.Dir(canonDst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("failed to create parent directory %s: %w", dir, err)
+	}
+
+	err := os.Rename(canonSrc, canonDst)
+	if err == nil {
+		return nil
+	}
+
+	// Fallback for cross-device renames or filesystem boundaries
+	if err := CopyFile(canonSrc, canonDst); err != nil {
+		return fmt.Errorf("failed to move %s to %s: %w", canonSrc, canonDst, err)
+	}
+	if err := os.Remove(canonSrc); err != nil {
+		return fmt.Errorf("copied %s to %s but failed to remove original source: %w", canonSrc, canonDst, err)
+	}
+	return nil
+}
+
+// DeleteFile removes canonPath.
+func DeleteFile(canonPath string) error {
+	if err := os.Remove(canonPath); err != nil {
+		return fmt.Errorf("failed to delete %s: %w", canonPath, err)
+	}
+	return nil
+}
+
 // EditFile replaces oldStr with newStr in canonPath. Unless replaceAll is
 // set, oldStr must appear exactly once - zero or multiple matches are
 // rejected rather than guessed at, so the caller can supply more
@@ -140,11 +207,35 @@ func EditFile(canonPath, oldStr, newStr string, replaceAll bool) error {
 	return WriteFile(canonPath, updated)
 }
 
+func isUnifiedDiff(diff string) bool {
+	hasMinusHeader := false
+	hasPlusHeader := false
+	hasHunkHeader := false
+	lines := strings.Split(diff, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "--- ") || trimmed == "---" {
+			hasMinusHeader = true
+		}
+		if strings.HasPrefix(trimmed, "+++ ") || trimmed == "+++" {
+			hasPlusHeader = true
+		}
+		if strings.HasPrefix(trimmed, "@@") && strings.Contains(trimmed[2:], "@@") {
+			hasHunkHeader = true
+		}
+	}
+	return hasMinusHeader && hasPlusHeader && hasHunkHeader
+}
+
 // PatchFile applies a unified diff (read from diff) to canonPath by
 // shelling out to the system `patch` binary, writing its output to a temp
 // file first and renaming over canonPath only on success - so a malformed
 // or partially-applying diff never leaves canonPath half-patched.
 func PatchFile(canonPath string, diff string) error {
+	if !isUnifiedDiff(diff) {
+		return fmt.Errorf("patch rejected: input diff is not in unified diff format (must include \"---\", \"+++\", and \"@@\" hunk headers)")
+	}
+
 	if _, err := exec.LookPath("patch"); err != nil {
 		return fmt.Errorf("the \"patch\" command is not available on PATH: %w", err)
 	}

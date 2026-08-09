@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// DefaultHTTPTimeoutSeconds is the default timeout (15 minutes) for HTTP client calls to LLM backends.
+const DefaultHTTPTimeoutSeconds = 900
+
 // RuntimeConfig represents the agent's runtime.json configuration.
 type RuntimeConfig struct {
 	// Provider selects the model provider: "openai" (default when Endpoint is set),
@@ -19,6 +22,10 @@ type RuntimeConfig struct {
 	APIKey            string  `json:"apiKey"`
 	SessionCompactPct float64 `json:"sessionCompactPct"`
 	ContextWindow     int     `json:"contextWindow"`
+
+	// TimeoutSeconds sets the HTTP client timeout in seconds for API calls to the LLM backend.
+	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
+	TimeoutSeconds int `json:"timeoutSeconds,omitempty"`
 
 	// Anthropic-specific thinking fields:
 	AnthropicThinkingBudgetTokens *int   `json:"anthropicThinkingBudgetTokens,omitempty"`

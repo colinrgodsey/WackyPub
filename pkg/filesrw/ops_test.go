@@ -15,33 +15,56 @@ func TestReadFile(t *testing.T) {
 		t.Fatalf("failed to write sample file: %v", err)
 	}
 
-	// Full file read
-	out, err := ReadFile(filePath, 0, 0)
+	// 1. Default unnumbered raw read
+	rawOut, err := ReadFile(filePath, 0, 0, false)
 	if err != nil {
-		t.Fatalf("ReadFile failed: %v", err)
+		t.Fatalf("ReadFile raw failed: %v", err)
 	}
-	expectedFull := "1\tline 1\n2\tline 2\n3\tline 3\n4\tline 4\n"
-	if out != expectedFull {
-		t.Errorf("got %q, expected %q", out, expectedFull)
+	if rawOut != content {
+		t.Errorf("got %q, expected %q", rawOut, content)
 	}
 
-	// Line range [2, 3]
-	outRange, err := ReadFile(filePath, 2, 3)
+	// 2. Numbered read (cat -n style: %6d\t%s)
+	numberedOut, err := ReadFile(filePath, 0, 0, true)
+	if err != nil {
+		t.Fatalf("ReadFile numbered failed: %v", err)
+	}
+	expectedNumbered := "     1\tline 1\n     2\tline 2\n     3\tline 3\n     4\tline 4\n"
+	if numberedOut != expectedNumbered {
+		t.Errorf("got %q, expected %q", numberedOut, expectedNumbered)
+	}
+
+	// 3. Line range [2, 3] unnumbered
+	outRange, err := ReadFile(filePath, 2, 3, false)
 	if err != nil {
 		t.Fatalf("ReadFile range failed: %v", err)
 	}
-	expectedRange := "2\tline 2\n3\tline 3\n"
+	expectedRange := "line 2\nline 3\n"
 	if outRange != expectedRange {
 		t.Errorf("got %q, expected %q", outRange, expectedRange)
 	}
 
-	// Binary file read rejection
+	// 4. Hard read size limit (> 200KB) error
+	largePath := filepath.Join(tempDir, "large.txt")
+	largeData := make([]byte, MaxReadSizeBytes+1024)
+	for i := range largeData {
+		largeData[i] = 'a'
+	}
+	if err := os.WriteFile(largePath, largeData, 0o600); err != nil {
+		t.Fatalf("failed to write large file: %v", err)
+	}
+	_, err = ReadFile(largePath, 0, 0, false)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the 204800 byte read limit") {
+		t.Errorf("expected read size cap error, got %v", err)
+	}
+
+	// 5. Binary file read rejection
 	binPath := filepath.Join(tempDir, "sample.bin")
 	binContent := []byte{'h', 'e', 'l', 'l', 'o', 0, 'w', 'o', 'r', 'l', 'd'}
 	if err := os.WriteFile(binPath, binContent, 0o600); err != nil {
 		t.Fatalf("failed to write binary file: %v", err)
 	}
-	_, err = ReadFile(binPath, 0, 0)
+	_, err = ReadFile(binPath, 0, 0, false)
 	if err == nil || !strings.Contains(err.Error(), "binary file") {
 		t.Errorf("expected binary file error, got %v", err)
 	}
@@ -62,6 +85,72 @@ func TestWriteFile(t *testing.T) {
 	}
 	if string(readBack) != content {
 		t.Errorf("got %q, expected %q", string(readBack), content)
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "src.txt")
+	dst := filepath.Join(tempDir, "sub", "dst.txt")
+	content := "copy test bytes\n"
+
+	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write src: %v", err)
+	}
+
+	if err := CopyFile(src, dst); err != nil {
+		t.Fatalf("CopyFile failed: %v", err)
+	}
+
+	readBack, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("failed to read dst: %v", err)
+	}
+	if string(readBack) != content {
+		t.Errorf("got %q, expected %q", string(readBack), content)
+	}
+}
+
+func TestMoveFile(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "move_src.txt")
+	dst := filepath.Join(tempDir, "sub", "move_dst.txt")
+	content := "move test bytes\n"
+
+	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write src: %v", err)
+	}
+
+	if err := MoveFile(src, dst); err != nil {
+		t.Fatalf("MoveFile failed: %v", err)
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("expected source file to be removed after move")
+	}
+
+	readBack, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("failed to read dst: %v", err)
+	}
+	if string(readBack) != content {
+		t.Errorf("got %q, expected %q", string(readBack), content)
+	}
+}
+
+func TestDeleteFile(t *testing.T) {
+	tempDir := t.TempDir()
+	target := filepath.Join(tempDir, "delete_me.txt")
+	if err := os.WriteFile(target, []byte("temp"), 0o600); err != nil {
+		t.Fatalf("failed to write target: %v", err)
+	}
+
+	if err := DeleteFile(target); err != nil {
+		t.Fatalf("DeleteFile failed: %v", err)
+	}
+
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("expected file to be deleted")
 	}
 }
 
@@ -115,6 +204,12 @@ func TestPatchFile(t *testing.T) {
 		t.Fatalf("failed to write patch target: %v", err)
 	}
 
+	// Non-unified diff rejected
+	if err := PatchFile(filePath, "invalid diff format"); err == nil {
+		t.Errorf("expected non-unified diff to be rejected, got nil")
+	}
+
+	// Valid unified diff
 	diff := strings.Join([]string{
 		"--- patch_target.txt",
 		"+++ patch_target.txt",

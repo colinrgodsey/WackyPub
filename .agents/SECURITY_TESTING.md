@@ -50,15 +50,22 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 
 ## Checklist
 
-- **`y` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/list
-  gated by a per-directory `FILES_RW_ACCESS` allowlist (see DECISIONS.md
-  D22). Swarm-tested 2026-08-08 (1 coordinator, 3 workers - see
-  [`docs/files-rw-security-test.md`](../docs/files-rw-security-test.md)):
-  19 attack ideas proposed, 14+ executed live against the real binary, all
-  blocked. One hardening note (not a bypass): the hardlink-to-
-  `FILES_RW_ACCESS` protection is currently incidental (a side effect of
-  atomic writes, not an explicit check) - now documented in `WriteFile`'s
-  doc comment so it can't be silently regressed.
+- **`?` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
+  copy/move/delete/list gated by a per-directory `FILES_RW_ACCESS`
+  allowlist (see DECISIONS.md D22, D23). Reset from `y` to `?` per the
+  invalidation rule: the 2026-08-08 swarm test (19 ideas, 14+ executed,
+  all blocked) covered `read`/`write`/`edit`/`patch`/`list` as they existed
+  at commit `f9ce0d2`, before D23 added `copy`/`move`/`delete` (new
+  write/delete-capable commands with their own access-check call sites the
+  swarm never saw) and changed `read`'s default output and `patch`'s
+  validation logic. That report is deleted per the same rule - it describes
+  behavior that no longer matches the code. Verified directly by the
+  implementer (not a swarm pass, doesn't earn `y`/`n` - see "who's
+  qualified" above): `copy`'s source/destination grants, `move`'s
+  dual-write-grant requirement, `delete`'s self-access denial on
+  `FILES_RW_ACCESS`, the 200KB read cap, and `patch`'s non-unified-diff
+  rejection all held under direct testing. Pending a fresh swarm run
+  against the current command surface.
 
 ## Not yet on this list
 

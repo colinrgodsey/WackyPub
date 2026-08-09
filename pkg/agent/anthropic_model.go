@@ -25,6 +25,11 @@ func NewAnthropicModel(runtimeCfg *RuntimeConfig) model.LLM {
 		budget = runtimeCfg.ThinkingBudgetTokens
 	}
 
+	timeoutSec := runtimeCfg.TimeoutSeconds
+	if timeoutSec <= 0 {
+		timeoutSec = DefaultHTTPTimeoutSeconds
+	}
+
 	anthropicCfg := adkanthropic.Config{
 		APIKey:         runtimeCfg.APIKey,
 		BaseURL:        strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
@@ -32,7 +37,7 @@ func NewAnthropicModel(runtimeCfg *RuntimeConfig) model.LLM {
 		ThinkingMode:   mode,
 		ThinkingEffort: effort,
 		HTTPOptions: adkanthropic.HTTPOptions{
-			Client: &http.Client{Timeout: 120 * time.Second},
+			Client: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		},
 	}
 	if budget != nil {

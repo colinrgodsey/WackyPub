@@ -63,12 +63,17 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		}
 	}
 
+	timeoutSec := runtimeCfg.TimeoutSeconds
+	if timeoutSec <= 0 {
+		timeoutSec = DefaultHTTPTimeoutSeconds
+	}
+
 	return adkopenai.New(adkopenai.Config{
 		APIKey:    runtimeCfg.APIKey,
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
 		ModelName: runtimeCfg.Model,
 		HTTPOptions: adkopenai.HTTPOptions{
-			Client: &http.Client{Timeout: 120 * time.Second},
+			Client: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		},
 		ReasoningEgress:          adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
 		ReasoningField:           runtimeCfg.ReasoningField,

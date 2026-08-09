@@ -183,31 +183,10 @@ Only matters for agents with `supportsReasoningDetails: true` (which also
 requires a pinned model - see DECISIONS.md D6), so the exposure is narrow,
 but the compaction trigger could fire later than it should for those agents.
 
-## HTTP client timeout is far too short for real agent/swarm workloads
+## HTTP client timeout (Resolved: 900s default + `timeoutSeconds` knob)
 
-`NewOpenAIModel` and `NewAnthropicModel` (`pkg/agent/openai_model.go`,
-`pkg/agent/anthropic_model.go`) both hardcode `&http.Client{Timeout: 120 *
-time.Second}`. Confirmed live during the first `files-rw` swarm pen-test:
-an OpenRouter-hosted worker (`google/gemma-4-26b-a4b-it` at
-`reasoning.effort: high`) hit `context deadline exceeded` on its very first
-call and again on retry - a slow/loaded backend model legitimately can take
-longer than 120s to produce a first token, especially at high reasoning
-effort, and this is only going to get more common as agents chain longer
-tool loops and get orchestrated into swarms.
+Originally hardcoded to `120s`, causing `context deadline exceeded` during swarm workloads on slow backends (e.g. OpenRouter or local llama-server under high reasoning effort). Resolved by bumping the default HTTP client timeout in `NewOpenAIModel` and `NewAnthropicModel` to 900s (15 minutes; `DefaultHTTPTimeoutSeconds` in `pkg/agent/runtime.go`) and exposing `timeoutSeconds` in `runtime.json` for per-agent overrides.
 
-Reported directly from local experience running swarms against a
-self-hosted llama-server: 15 minutes of no response is the point actually
-worth calling a timeout, and even that isn't always enough given a long
-enough toolchain - leaning towards no timeout at all by default (`0`, Go's
-`http.Client` zero value for "no timeout") rather than picking a longer but
-still-arbitrary fixed number. Whatever the default ends up being, it should
-almost certainly be a `runtime.json` knob (a generic timeout field, or
-per-provider) rather than hardcoded, since "how long is too long" depends
-entirely on the backend and workload, not the provider adapter. Native
-Gemini (`CreateGeminiModel`, `pkg/agent/adk_agent.go`) doesn't set an
-explicit client override at all - worth checking what the underlying
-`google.golang.org/adk/v2/model/gemini` package defaults to before assuming
-it's unaffected.
 
 ## No way to cancel an in-flight agent task
 
@@ -262,7 +241,9 @@ is a file" framing alone.
 
 ## Consider an explicit hardlink/inode check in `files-rw`'s `Access.Resolve`
 
-Found via the first `files-rw` swarm pen-test (`docs/files-rw-security-test.md`):
+Found via the first `files-rw` swarm pen-test (see DECISIONS.md D23 - the
+report itself was deleted per `SECURITY_TESTING.md`'s invalidation rule
+once D23's changes landed, but the finding is still real and unfixed):
 a hardlink planted inside a writable root, pointing at `FILES_RW_ACCESS`,
 currently gets blocked only because `WriteFile` (`pkg/filesrw/ops.go`)
 writes atomically (temp file + rename), which severs the hardlink instead

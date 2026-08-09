@@ -190,7 +190,16 @@ func (a *Access) Resolve(path, cwd string, needWrite bool) (string, error) {
 	}
 
 	if canon == a.denyPath {
-		return "", fmt.Errorf("access to %s itself is always denied", AccessFileName)
+		// Reading the access file itself is always allowed - it's the only
+		// way an agent can introspect its own grant instead of rediscovering
+		// it through trial and error (confirmed live: this is exactly what
+		// happened without it). Mutating it is a different story - that's
+		// the actual privilege-escalation risk this denies unconditionally,
+		// regardless of any rule that would otherwise cover it.
+		if needWrite {
+			return "", fmt.Errorf("access to %s itself is always denied", AccessFileName)
+		}
+		return canon, nil
 	}
 
 	roots := a.readableRoots

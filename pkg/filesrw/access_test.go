@@ -129,10 +129,20 @@ func TestAccess_Resolve(t *testing.T) {
 		t.Fatalf("LoadAccess failed: %v", err)
 	}
 
-	// 1. FILES_RW_ACCESS itself denied unconditionally
-	_, err = acc.Resolve(AccessFileName, tempDir, false)
+	// 1. FILES_RW_ACCESS itself: read always allowed (self-introspection),
+	// write always denied (mutating it is the actual privilege-escalation
+	// risk), regardless of any rule that would otherwise cover it.
+	accessFilePath := filepath.Join(tempDir, AccessFileName)
+	canonAccess, err := acc.Resolve(AccessFileName, tempDir, false)
+	if err != nil {
+		t.Errorf("expected FILES_RW_ACCESS to be readable, got err: %v", err)
+	}
+	if canonAccess != accessFilePath {
+		t.Errorf("resolved path %q != expected %q", canonAccess, accessFilePath)
+	}
+	_, err = acc.Resolve(AccessFileName, tempDir, true)
 	if err == nil || !strings.Contains(err.Error(), "always denied") {
-		t.Errorf("expected FILES_RW_ACCESS to be denied, got err: %v", err)
+		t.Errorf("expected FILES_RW_ACCESS write to be denied, got err: %v", err)
 	}
 
 	// 2. Read existing file in read-only dir
