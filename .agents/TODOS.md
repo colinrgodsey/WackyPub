@@ -117,9 +117,6 @@ regression here without requiring a live LLM call.
 
 Bootstrapping a new workspace's `WACKYPUB_ROOT` file currently requires creating `WACKYPUB_ROOT` by hand (`touch WACKYPUB_ROOT`). A dedicated `wackypub init` command (to create `WACKYPUB_ROOT` and scaffold an agent directory) may be worth adding later.
 
-## Future Scratchpad management (`wackypub scratchpad` CLI commands)
-
-Scratchpad slots are managed in-session via built-in agent tools (`create_scratchpad`/`get_scratchpad`/`list_scratchpads`) and `run_command` I/O redirection (see DECISIONS.md D18). `list_scratchpads` covers in-session forensic inspection, but there's still no CLI-level equivalent (`wackypub agent <id> scratchpad list/read/clear`) for human operators or external tooling to inspect and manage persistent scratchpad slots from outside a live agent turn.
 
 ## Open question: does `WACKYPUB_ALLOWED_AGENTS` restrict CWD-based invocations in general, or only actual tool-call context?
 
@@ -254,3 +251,8 @@ D26 landed and was verified directly (not yet a swarm pass, doesn't earn `y`/`n`
 The second swarm run's "TOCTOU race" finding (`cp target/secret.txt scratch/race_target &` racing `files-rw read`) doesn't actually demonstrate a `files-rw`-specific leak on reflection: `cp` overwrites the destination inode's content in place, not via a rename/symlink-swap `Access.OpenFile`'s fd-based check could ever catch, and for the race to have anything to win with, `cp` first has to read `target/secret.txt` *directly* - meaning the "secret" is already sitting in the agent-writable, agent-readable `./scratch` the instant `cp` finishes, independent of whether `files-rw read` is ever called afterward. Same underlying issue as the hardlink case's original "if an agent has bash access it's game over" framing (D22/D24): the test setup gives workers real `bash` (needed so far for building fixtures - symlinks, hardlinks, race loops), which means every worker already has full OS-level read access to anything the OS user can read, making some findings a property of the test harness rather than of `files-rw` itself.
 
 Next full swarm run against `files-rw` should try giving workers *only* `files-rw` - no `bash`, no `ln`, no fixture-building tools at all. This is closer to `files-rw`'s actual intended deployment (D22: the tool is meant to be the *only* file-touching capability an agent has) and would cleanly separate "vulnerabilities reachable through `files-rw`'s own command surface alone" from "things possible because the test setup handed out a shell." Loses the ability for workers to construct symlink/hardlink attack fixtures themselves (there's no `files-rw` command that creates a symlink or hardlink), which is a real trade-off, not a pure improvement - probably worth running both configurations rather than only ever switching to bash-less, since each answers a different question about the deployment surface.
+
+## Scratchpad Diff & Patch Verification
+
+Running `diff -u` over two scratchpad entries (`<SCRATCHPAD_DATA id="before" />` vs `<SCRATCHPAD_DATA id="after" />`) to auto-capture diffs and verify code edits out-of-band. Allows agents to preview, validate, and summarize patch changes out-of-band with zero token generation overhead.
+

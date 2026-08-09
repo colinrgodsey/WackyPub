@@ -457,6 +457,18 @@ wackypub agent <agent_id> compact
 ```
 - Manually evaluates and performs session compaction if token threshold is met.
 
+### Scratchpad Management (`scratchpad`)
+```bash
+wackypub agent <agent_id> scratchpad create [message]
+wackypub agent <agent_id> scratchpad read <entry_id> [--skip-lines N] [--num-lines M]
+wackypub agent <agent_id> scratchpad list
+wackypub agent <agent_id> scratchpad search <entry_id> <query> [--regex] [--case-insensitive] [--max-results N]
+```
+- CLI-level access to an agent's persistent scratchpad (`<ws_dir>/<agent_id>/scratchpad.json`) (see DECISIONS.md D27).
+- `create`: accepts text via positional argument, `--message` flag, or piped stdin. Acquires session lock for atomic write.
+- `read`, `list`, `search`: pure reads against atomic temp-file replacement, executing without session lock.
+- Supports both `wackypub agent <agent_id> scratchpad <subverb>` and `wackypub agent scratchpad <subverb> <agent_id>` syntaxes for positional arguments - but flags (`--skip-lines`, `--regex`, etc.) only work in the second form (`wackypub agent scratchpad <subverb> <agent_id> ... --flag`); see `skills/wackypub/SKILL.md`'s Flag Ordering Caveat.
+
 ### Workspace Diagnostics (`workspace`)
 ```bash
 wackypub workspace

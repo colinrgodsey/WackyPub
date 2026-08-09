@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -429,6 +430,212 @@ what's printed, though it is still persisted to session.jsonl).`,
 	},
 }
 
+// wackypub agent <id> scratchpad ... OR wackypub agent scratchpad ...
+var scratchpadCmd = &cobra.Command{
+	Use:   "scratchpad",
+	Short: "Manage persistent scratchpad entries for an agent (<ws_dir>/<agent_id>/scratchpad.json)",
+	Long:  "Create, read, list, and search persistent scratchpad entries stored in <ws_dir>/<agent_id>/scratchpad.json.",
+}
+
+var scratchpadCreateCmd = &cobra.Command{
+	Use:   "create [agent_id] [message]",
+	Short: "Store a text payload into an agent's persistent scratchpad",
+	Long: `Creates a new scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json with a generated 4-character ID.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  message    The text to store. Can also be supplied via --message flag or piped in on stdin.
+
+Acquires the session lock for the duration of the write. Automatically evicts the entry with the lowest seq if capacity (50) is exceeded.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID string
+		var content string
+
+		if len(args) >= 2 {
+			agentID = args[0]
+			content = args[1]
+		} else if len(args) == 1 {
+			agentID = args[0]
+			content = messageFlag
+		} else {
+			content = messageFlag
+		}
+
+		if content == "" {
+			stat, _ := os.Stdin.Stat()
+			if (stat.Mode() & os.ModeCharDevice) == 0 {
+				reader := bufio.NewReader(os.Stdin)
+				bytesInput, err := io.ReadAll(reader)
+				if err == nil {
+					content = string(bytesInput)
+				}
+			}
+		}
+
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> scratchpad create [message]")
+		}
+		if content == "" {
+			return fmt.Errorf("scratchpad content is required. Provide via argument, --message flag, or stdin pipe")
+		}
+
+		entry, err := sdk.CreateScratchpad(agentID, content, "cli")
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Created scratchpad entry %q (seq %d, %d bytes) for agent %q.\n", entry.ID, entry.Seq, entry.Size, agentID)
+		return nil
+	},
+}
+
+var (
+	scratchpadSkipLines int
+	scratchpadNumLines  int
+)
+
+var scratchpadReadCmd = &cobra.Command{
+	Use:   "read [agent_id] <entry_id>",
+	Short: "Read stored text from an agent's scratchpad entry",
+	Long: `Retrieves stored text content from <ws_dir>/<agent_id>/scratchpad.json by entry ID.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  entry_id   Required. The 4-character scratchpad entry ID to read.
+
+Pass --skip-lines N and/or --num-lines M for line-based pagination. Does not acquire the session lock (read-only against atomic temp-file replace).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		if len(args) < 2 {
+			return fmt.Errorf("agent_id and entry_id are required. Usage: wackypub agent <agent_id> scratchpad read <entry_id>")
+		}
+		agentID := args[0]
+		entryID := args[1]
+
+		var skipPtr *int
+		if cmd.Flags().Changed("skip-lines") {
+			skipPtr = &scratchpadSkipLines
+		}
+		var numPtr *int
+		if cmd.Flags().Changed("num-lines") {
+			numPtr = &scratchpadNumLines
+		}
+
+		out, err := sdk.GetScratchpad(agentID, entryID, skipPtr, numPtr)
+		if err != nil {
+			return err
+		}
+
+		fmt.Print(out)
+		if !strings.HasSuffix(out, "\n") && out != "" {
+			fmt.Println()
+		}
+		return nil
+	},
+}
+
+var scratchpadListCmd = &cobra.Command{
+	Use:   "list [agent_id]",
+	Short: "List all live scratchpad entries for an agent",
+	Long: `Lists metadata (ID, seq, size, created_by, created_at) and capacity usage for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad.json.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Outputs JSON metadata. Does not acquire the session lock (read-only against atomic temp-file replace).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		if len(args) < 1 {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> scratchpad list")
+		}
+		agentID := args[0]
+
+		items, count, capVal, err := sdk.ListScratchpads(agentID)
+		if err != nil {
+			return err
+		}
+
+		result := struct {
+			Entries []adkAgent.ScratchpadItem `json:"entries"`
+			Count   int                       `json:"count"`
+			Cap     int                       `json:"cap"`
+		}{
+			Entries: items,
+			Count:   count,
+			Cap:     capVal,
+		}
+
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	},
+}
+
+var (
+	scratchpadRegex           bool
+	scratchpadCaseInsensitive bool
+	scratchpadMaxResults      int
+)
+
+var scratchpadSearchCmd = &cobra.Command{
+	Use:   "search [agent_id] <entry_id> <query>",
+	Short: "Search a scratchpad entry for matching lines",
+	Long: `Searches a specific scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json for matching lines.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  entry_id   Required. The 4-character scratchpad entry ID to search.
+  query      Required. The text substring or regex pattern to search for.
+
+Returns 1-indexed line numbers, precomputed skip_lines for get_scratchpad pagination, and truncated line text.
+Does not acquire the session lock (read-only against atomic temp-file replace).`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		if len(args) < 3 {
+			return fmt.Errorf("agent_id, entry_id, and query are required. Usage: wackypub agent <agent_id> scratchpad search <entry_id> <query>")
+		}
+		agentID := args[0]
+		entryID := args[1]
+		query := args[2]
+
+		var caseSensPtr *bool
+		if scratchpadCaseInsensitive {
+			val := false
+			caseSensPtr = &val
+		}
+
+		res, err := sdk.SearchScratchpad(agentID, entryID, query, caseSensPtr, scratchpadRegex, scratchpadMaxResults)
+		if err != nil {
+			return err
+		}
+
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(res)
+	},
+}
+
 // ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|generate|prompt|...>" syntax.
 func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 	if len(args) >= 2 {
@@ -459,6 +666,27 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 			return agentRenderPromptCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "compact" {
 			return agentCompactCmd.RunE(cmd, []string{agentID})
+		} else if subCmd == "scratchpad" {
+			if len(args) < 3 {
+				return scratchpadCmd.Help()
+			}
+			action := args[2]
+			rem := []string{agentID}
+			if len(args) > 3 {
+				rem = append(rem, args[3:]...)
+			}
+			switch action {
+			case "create":
+				return scratchpadCreateCmd.RunE(cmd, rem)
+			case "read":
+				return scratchpadReadCmd.RunE(cmd, rem)
+			case "list":
+				return scratchpadListCmd.RunE(cmd, rem)
+			case "search":
+				return scratchpadSearchCmd.RunE(cmd, rem)
+			default:
+				return scratchpadCmd.Help()
+			}
 		}
 	}
 
@@ -471,6 +699,19 @@ func init() {
 	// panics on the collision as soon as --help (or completion) merges the two flag sets.
 	agentAddCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
 	agentPromptCmd.Flags().StringVar(&messageFlag, "message", "", "User message content")
+	scratchpadCreateCmd.Flags().StringVar(&messageFlag, "message", "", "Scratchpad text payload")
+
+	scratchpadReadCmd.Flags().IntVar(&scratchpadSkipLines, "skip-lines", 0, "Number of lines to skip from start of entry")
+	scratchpadReadCmd.Flags().IntVar(&scratchpadNumLines, "num-lines", 0, "Maximum number of lines to return")
+
+	scratchpadSearchCmd.Flags().BoolVar(&scratchpadRegex, "regex", false, "Treat query as a regular expression pattern")
+	scratchpadSearchCmd.Flags().BoolVar(&scratchpadCaseInsensitive, "case-insensitive", false, "Perform case-insensitive search (default: false)")
+	scratchpadSearchCmd.Flags().IntVar(&scratchpadMaxResults, "max-results", 50, "Maximum number of matching lines to return")
+
+	scratchpadCmd.AddCommand(scratchpadCreateCmd)
+	scratchpadCmd.AddCommand(scratchpadReadCmd)
+	scratchpadCmd.AddCommand(scratchpadListCmd)
+	scratchpadCmd.AddCommand(scratchpadSearchCmd)
 
 	agentCmd.RunE = executeAgentDispatcher
 
@@ -482,6 +723,7 @@ func init() {
 	agentCmd.AddCommand(agentReadMemoryCmd)
 	agentCmd.AddCommand(agentRenderPromptCmd)
 	agentCmd.AddCommand(agentCompactCmd)
+	agentCmd.AddCommand(scratchpadCmd)
 
 	RootCmd.AddCommand(agentCmd)
 }

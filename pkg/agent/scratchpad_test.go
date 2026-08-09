@@ -189,3 +189,79 @@ func TestCreateScratchpad_ConcurrentCreations(t *testing.T) {
 		t.Errorf("expected %d items, got %d", numGoroutines, len(items))
 	}
 }
+
+func TestSDK_ScratchpadOperations(t *testing.T) {
+	wsDir := t.TempDir()
+	sdk := NewSDK(wsDir)
+
+	agentID := "test_agent"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	// 1. CreateScratchpad via SDK
+	text := "Line 1: Hello SDK\nLine 2: Search target\nLine 3: Goodbye SDK\n"
+	entry, err := sdk.CreateScratchpad(agentID, text, "cli_test")
+	if err != nil {
+		t.Fatalf("sdk.CreateScratchpad failed: %v", err)
+	}
+	if entry.CreatedBy != "cli_test" {
+		t.Errorf("expected CreatedBy 'cli_test', got %q", entry.CreatedBy)
+	}
+
+	// 2. GetScratchpad via SDK
+	readBack, err := sdk.GetScratchpad(agentID, entry.ID, nil, nil)
+	if err != nil {
+		t.Fatalf("sdk.GetScratchpad failed: %v", err)
+	}
+	if readBack != text {
+		t.Errorf("got %q, expected %q", readBack, text)
+	}
+
+	// 3. ListScratchpads via SDK
+	items, count, capVal, err := sdk.ListScratchpads(agentID)
+	if err != nil {
+		t.Fatalf("sdk.ListScratchpads failed: %v", err)
+	}
+	if count != 1 || capVal != MaxScratchpadEntries || len(items) != 1 {
+		t.Errorf("unexpected list output: count %d, cap %d, len %d", count, capVal, len(items))
+	}
+
+	// 4. SearchScratchpad via SDK
+	searchRes, err := sdk.SearchScratchpad(agentID, entry.ID, "target", nil, false, 10)
+	if err != nil {
+		t.Fatalf("sdk.SearchScratchpad failed: %v", err)
+	}
+	if searchRes.TotalMatches != 1 {
+		t.Errorf("expected 1 match, got %d", searchRes.TotalMatches)
+	}
+	if len(searchRes.Matches) > 0 && searchRes.Matches[0].Line != 2 {
+		t.Errorf("expected line 2, got %d", searchRes.Matches[0].Line)
+	}
+}
+
+func TestCreateScratchpad_MacroCombination(t *testing.T) {
+	agentDir := t.TempDir()
+
+	e1, err := CreateScratchpad(agentDir, "Part 1 Data", "test")
+	if err != nil {
+		t.Fatalf("failed to create e1: %v", err)
+	}
+
+	e2, err := CreateScratchpad(agentDir, "Part 2 Data", "test")
+	if err != nil {
+		t.Fatalf("failed to create e2: %v", err)
+	}
+
+	combinedPayload := fmt.Sprintf("Header:\n<SCRATCHPAD_DATA id=%q />\n<SCRATCHPAD_DATA id=%q />\nFooter", e1.ID, e2.ID)
+	combinedEntry, err := CreateScratchpad(agentDir, combinedPayload, "test_combine")
+	if err != nil {
+		t.Fatalf("failed to create combined entry: %v", err)
+	}
+
+	expectedText := "Header:\nPart 1 Data\nPart 2 Data\nFooter"
+	if combinedEntry.Text != expectedText {
+		t.Errorf("got combined text %q, expected %q", combinedEntry.Text, expectedText)
+	}
+}

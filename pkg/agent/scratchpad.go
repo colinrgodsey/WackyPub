@@ -132,9 +132,15 @@ func WriteScratchpadStore(agentDir string, store *ScratchpadStore) error {
 }
 
 // CreateScratchpad creates a new scratchpad entry with a random 4-character ID according to D18.
+// Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
 // Thread-safe for concurrent goroutines within the same process.
 // Automatically evicts the entry with the lowest seq when live entries exceed cap (50).
 func CreateScratchpad(agentDir string, text string, createdBy string) (*ScratchpadEntry, error) {
+	expandedText, err := ExpandScratchpadMacros(agentDir, text)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand scratchpad macros: %w", err)
+	}
+
 	mu := getScratchpadMutex(agentDir)
 	mu.Lock()
 	defer mu.Unlock()
@@ -159,10 +165,10 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 	entry := &ScratchpadEntry{
 		ID:        id,
 		Seq:       maxSeq + 1,
-		Size:      len(text),
+		Size:      len(expandedText),
 		CreatedBy: createdBy,
 		CreatedAt: time.Now().UTC(),
-		Text:      text,
+		Text:      expandedText,
 	}
 	store.Entries[id] = entry
 

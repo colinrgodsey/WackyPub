@@ -595,3 +595,43 @@ Reviewed the first-pass D24 fix before spending a swarm run verifying it, and fo
 **Deferred, not abandoned**: a real, non-blunt hardlink defense (one that doesn't also block legitimate multi-linked files) remains an open question, alongside the option of pushing more of this mitigation to deployment/environment hardening instead of application code - e.g. actually enforcing `fs.protected_hardlinks` (confirmed disabled/unenforced in the swarm test's container, D24) or simply not co-locating mutually-distrusting agents on a shared writable filesystem in the first place, rather than trying to detect the aliasing after the fact from inside `files-rw` itself.
 
 **Why**: same reasoning as D24's own "why accept this now" - a security fix that isn't actually verified to close what it claims to close, or that trades one real gap for a new unverified one (the walk-based DoS surface), isn't worth spending a swarm run confirming. Catching this in review, before the swarm run, is cheaper than a swarm run rediscovering the exact same category of incomplete fix.
+
+## D27: `wackypub agent <id> scratchpad {create,read,list,search}` - CLI-level scratchpad access
+
+Workshopped, not yet implemented. Closes an already-logged gap (the former "Future Scratchpad management" TODO): scratchpad slots have only ever been reachable from inside a live agent turn via the built-in tools (`create_scratchpad`/`get_scratchpad`/`list_scratchpads`/`search_scratchpad`, D18/D25) - no way for a human operator, external tooling, or another agent driving `wackypub` from the CLI to read or write one directly.
+
+**Surface** (mirrors the four in-agent tools 1:1):
+```
+wackypub agent <id> scratchpad create [message]     # positional/--message flag/stdin, same 3-way pattern as `agent add`
+wackypub agent <id> scratchpad read <entry-id> [--skip-lines N] [--num-lines M]
+wackypub agent <id> scratchpad list
+wackypub agent <id> scratchpad search <entry-id> <query> [--regex] [--case-insensitive] [--max-results N]
+```
+Same `ValidateAgentTarget` authorization already applied to every other `agent <id> <verb>` command - no new authorization scheme, just consistent reuse of the existing one.
+
+**Locking**: `create` acquires the session lock (`AcquireSessionLock`) - it's a read-modify-write over the whole `scratchpad.json`, and two concurrent CLI *processes* (not goroutines - the existing in-process `getScratchpadMutex` doesn't help across process boundaries) racing to create an entry could lose one. `read`/`list`/`search` are pure reads against a file that's only ever atomically replaced (temp file + rename, D18), so per the same precedent that already dropped locking from read-only `AgentSDK` methods (self-deadlock fix, see TODOS.md), they don't acquire it.
+
+**What this replaces, and why nothing else needed building**:
+- The original idea was three separate features: (1) auto-expand `<SCRATCHPAD_DATA />` macros in an agent's *final response text* (not just tool-call args) so a caller gets the full content without the agent regenerating it; (2) auto-redirect a large *incoming* user message into scratchpad, mirroring the existing large-tool-*output* auto-capture (`ScratchpadOutputThreshold`); (3) this CLI exposure.
+- (1) turns out to need no new machinery: an agent can already put a raw `<SCRATCHPAD_DATA id="X" />` reference in its plain response text today (nothing expands it, but nothing breaks either) - once `scratchpad read` exists, the caller just pulls that specific entry on demand instead of every macro in every response getting force-expanded into stdout whether wanted or not. Caller-decides is strictly better than always-expand here.
+- (2) was explicitly rejected in favor of explicit-only: the caller stashes large content itself (`wackypub agent bob scratchpad create < bigfile.txt` returns an ID, then `wackypub agent bob prompt "summarize scratchpad <id>"`) rather than `add`/`prompt` silently redirecting a message above some threshold. Matches the project's standing preference for explicit tools over implicit magic (D-numerous precedent, most recently D23/D26's own "predictable primitive by default, no silent guessing") - no threshold to pick, explain, or have surprise a caller who didn't expect their message to be intercepted.
+
+**Explicitly deferred, not part of this decision**: a `scratchpad delete <entry-id>` CLI command (and matching in-agent tool - neither currently exists; entries only leave via automatic lowest-`seq` eviction past the 50-entry cap). Worth its own decision if a real need shows up, not bundled in here just because it's adjacent.
+
+**Why**: enables direct scratchpad-to-scratchpad piping between agents and CLI-level file-into-scratchpad piping for a human operator, both previously impossible without going through a live agent turn - and does it by exposing the same four operations that already exist in-session, not inventing a new mechanism.
+
+## D28: `CreateScratchpad` server-side macro expansion - out-of-band scratchpad concatenation and templating
+
+Implemented in `CreateScratchpad` (`pkg/agent/scratchpad.go`). Automatically expands inline `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` macros server-side before storing a new scratchpad entry payload in `scratchpad.json`.
+
+**Mechanics**:
+- `CreateScratchpad` calls `ExpandScratchpadMacros(agentDir, text)` *before* acquiring the per-agent directory mutex (`getScratchpadMutex`), resolving any referenced scratchpad entries (or slices) from disk and substituting their text into the payload before saving under a new 4-character ID.
+- Applies uniformly across all creation paths: the ADK `create_scratchpad` tool, the CLI `wackypub agent <id> scratchpad create` subcommand, and `AgentSDK.CreateScratchpad`.
+- Thread-safe and deadlock-free: macro resolution reads referenced entries via `GetScratchpad` (which acquires and releases the mutex per read) *before* `CreateScratchpad` locks the mutex for the main write, avoiding recursive/re-entrant mutex lock deadlocks.
+
+**Use Cases**:
+- **Out-of-Band Concatenation & Templating**: An agent or CLI script can stitch together multiple scratchpad entries (e.g. `text: "Header:\n<SCRATCHPAD_DATA id=\"hdr1\" />\nBody:\n<SCRATCHPAD_DATA id=\"dat2\" />"`) into a single new scratchpad entry in one tool call, without reading or outputting their text payloads into LLM context turns.
+- **Token Efficiency**: Allows agents and multi-agent swarms to combine arbitrary-sized datasets out-of-band with zero LLM generation tokens spent on payload contents.
+
+**Why**: `<SCRATCHPAD_DATA />` macros were originally expanded only inside `run_command` (tool `args` and `stdin`). Extending server-side macro expansion to `CreateScratchpad` brings the same zero-token macro capability to scratchpad creation itself, enabling out-of-band data combination without inventing a separate "combine_scratchpads" tool or forcing data through the model's context window.
+

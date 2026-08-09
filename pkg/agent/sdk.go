@@ -312,3 +312,92 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string) (bool, er
 	}
 	return CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
 }
+
+// CreateScratchpad creates a new persistent scratchpad entry for an agent (<ws_dir>/<agent_id>/scratchpad.json).
+// Acquires the session lock for the duration of the entry creation and atomic write.
+func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy string) (*ScratchpadEntry, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	if text == "" {
+		return nil, fmt.Errorf("scratchpad content cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	if createdBy == "" {
+		createdBy = "cli"
+	}
+	return CreateScratchpad(agentDir, text, createdBy)
+}
+
+// GetScratchpad retrieves stored text from <ws_dir>/<agent_id>/scratchpad.json by entry ID.
+// Does not acquire the session lock (read-only against atomic temp-file replace).
+func (s *AgentSDK) GetScratchpad(agentID string, entryID string, skipLines *int, numLines *int) (string, error) {
+	if agentID == "" {
+		return "", fmt.Errorf("agentID cannot be empty")
+	}
+	if entryID == "" {
+		return "", fmt.Errorf("entryID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	return GetScratchpad(agentDir, entryID, skipLines, numLines)
+}
+
+// ListScratchpads returns metadata items for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad.json.
+// Does not acquire the session lock (read-only against atomic temp-file replace).
+func (s *AgentSDK) ListScratchpads(agentID string) ([]ScratchpadItem, int, int, error) {
+	if agentID == "" {
+		return nil, 0, MaxScratchpadEntries, fmt.Errorf("agentID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, 0, MaxScratchpadEntries, err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	return ListScratchpads(agentDir)
+}
+
+// SearchScratchpad searches a specific scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json for matching lines.
+// Does not acquire the session lock (read-only against atomic temp-file replace).
+func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	if entryID == "" {
+		return nil, fmt.Errorf("entryID cannot be empty")
+	}
+	if query == "" {
+		return nil, fmt.Errorf("query cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
+}
