@@ -66,6 +66,18 @@ func ReadFile(canonPath string, start, end int) (string, error) {
 // WriteFile atomically overwrites (or creates) canonPath with content,
 // creating any missing parent directories first. Atomic via write-to-temp +
 // rename, so a crash mid-write never leaves a corrupted/partial file behind.
+//
+// This also happens to be what defeats a hardlink-to-FILES_RW_ACCESS attack
+// (confirmed live via swarm pen-test, see docs/files-rw-security-test.md): a
+// hardlink planted inside a writable root shares FILES_RW_ACCESS's inode but
+// passes Access.Resolve on its own (permitted) path, so an in-place write
+// through it would silently rewrite the real FILES_RW_ACCESS. Rename instead
+// replaces the writable root's directory entry with a new inode, severing
+// the hardlink before any bytes reach the original file. That's incidental
+// to why this function is atomic, not a deliberate hardlink defense - if
+// this ever changes to an in-place write (or gains a fast path that skips
+// the rename), that protection disappears with it. Don't remove the
+// temp+rename pattern without re-verifying this.
 func WriteFile(canonPath, content string) error {
 	dir := filepath.Dir(canonPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {

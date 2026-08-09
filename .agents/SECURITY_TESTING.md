@@ -50,19 +50,15 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 
 ## Checklist
 
-- **`?` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/list
+- **`y` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/list
   gated by a per-directory `FILES_RW_ACCESS` allowlist (see DECISIONS.md
-  D22). No swarm test run yet, no report in `docs/`. Prior verification on
-  record (2026-08-07, does not by itself earn `y`/`n`): implementer-written
-  scripted probes denied read of a file outside any grant, denied write to
-  a read-only grant, denied self-access to `FILES_RW_ACCESS` itself,
-  rejected a literal `~`, denied everything when the access file was
-  missing, denied a symlink planted inside an allowed directory pointing
-  outside it, and denied the boundary-prefix collision case (`allowed_rw`
-  vs `allowed_rw-secret`); separately, normal (non-adversarial) live use
-  through a real agent's tool-call loop (bob) incidentally surfaced and got
-  a fix + regression test for a real bug in the write-auto-mkdir path for a
-  writable root that didn't exist yet.
+  D22). Swarm-tested 2026-08-08 (1 coordinator, 3 workers - see
+  [`docs/files-rw-security-test.md`](../docs/files-rw-security-test.md)):
+  19 attack ideas proposed, 14+ executed live against the real binary, all
+  blocked. One hardening note (not a bypass): the hardlink-to-
+  `FILES_RW_ACCESS` protection is currently incidental (a side effect of
+  atomic writes, not an explicit check) - now documented in `WriteFile`'s
+  doc comment so it can't be silently regressed.
 
 ## Not yet on this list
 

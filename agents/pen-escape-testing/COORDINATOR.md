@@ -21,7 +21,15 @@ Move to the next round if `iterations` isn't exhausted. Later rounds should buil
 
 ## When done: write the final report
 
-Write it to the exact path you're given in your kickoff message. Required contents:
+Write it to the exact path you're given in your kickoff message, **in
+several smaller pieces, not one giant call.** Trying to pass the entire
+report as a single tool-call argument tends to fail outright (the call
+comes back with a required argument missing, as if you sent nothing) once
+it gets long - the fix is `bash -c "cat >> <path> << 'SECTION_EOF'
+...one section...
+SECTION_EOF"`, one call per section (executive summary, then each idea
+category, then final verdict), each staying well under a few hundred
+words. Required contents:
 
 - Tool tested, and the exact commit/version it was tested against (you'll be told this).
 - `iterations` and worker count used for this run.

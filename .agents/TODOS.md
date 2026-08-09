@@ -182,3 +182,96 @@ token estimate undercounted relative to what's actually sent on the wire.
 Only matters for agents with `supportsReasoningDetails: true` (which also
 requires a pinned model - see DECISIONS.md D6), so the exposure is narrow,
 but the compaction trigger could fire later than it should for those agents.
+
+## HTTP client timeout is far too short for real agent/swarm workloads
+
+`NewOpenAIModel` and `NewAnthropicModel` (`pkg/agent/openai_model.go`,
+`pkg/agent/anthropic_model.go`) both hardcode `&http.Client{Timeout: 120 *
+time.Second}`. Confirmed live during the first `files-rw` swarm pen-test:
+an OpenRouter-hosted worker (`google/gemma-4-26b-a4b-it` at
+`reasoning.effort: high`) hit `context deadline exceeded` on its very first
+call and again on retry - a slow/loaded backend model legitimately can take
+longer than 120s to produce a first token, especially at high reasoning
+effort, and this is only going to get more common as agents chain longer
+tool loops and get orchestrated into swarms.
+
+Reported directly from local experience running swarms against a
+self-hosted llama-server: 15 minutes of no response is the point actually
+worth calling a timeout, and even that isn't always enough given a long
+enough toolchain - leaning towards no timeout at all by default (`0`, Go's
+`http.Client` zero value for "no timeout") rather than picking a longer but
+still-arbitrary fixed number. Whatever the default ends up being, it should
+almost certainly be a `runtime.json` knob (a generic timeout field, or
+per-provider) rather than hardcoded, since "how long is too long" depends
+entirely on the backend and workload, not the provider adapter. Native
+Gemini (`CreateGeminiModel`, `pkg/agent/adk_agent.go`) doesn't set an
+explicit client override at all - worth checking what the underlying
+`google.golang.org/adk/v2/model/gemini` package defaults to before assuming
+it's unaffected.
+
+## No way to cancel an in-flight agent task
+
+Every other agent harness worth comparing against gives you some way to
+interrupt a run that's taking too long or has gone off the rails (Ctrl-C
+mid-generation, a cancel button, a kill command) - `wackypub` has nothing
+like this. Once `wackypub agent prompt`/`generate` is running, the only way
+to stop it is killing the process outright, which (depending on exactly
+where it lands) can leave the session lock held or a turn half-appended.
+Separate from the timeout issue above (a good cancellation story doesn't
+remove the need for a sane default timeout, and vice versa), but related:
+once agents are routinely being orchestrated into swarms/multi-agent
+chains, a stuck or runaway one needs to be stoppable without taking down
+the whole process tree around it. No design started yet.
+
+## Positioning idea: "it's like bash, for agents"
+
+Not code work - a framing/messaging angle for README/philosophy sections
+that isn't written up anywhere yet. The parallel is closer than it first
+sounds, point for point:
+
+- **Process per command, no daemon.** Every `bash` command is its own
+  process; state survives via the filesystem, not a long-lived
+  interpreter holding memory. Every `wackypub agent <cmd>` invocation is
+  the same - a fresh process per call, state persisted to
+  `session.jsonl`/`MEMORY.md` between calls, nothing held in memory
+  between invocations.
+- **Respects env vars.** `bash` passes environment down a process tree
+  (`PATH`, `HOME`, whatever's exported). `wackypub` does the same with
+  `WACKYPUB_CALL_CHAIN` (D16) - it's just inherited by every subprocess a
+  cross-agent call spawns, exactly like any other env var, and that's the
+  entire mechanism the cross-agent deadlock-cycle guard relies on.
+- **Special files in a home folder.** `bash` reads `~/.bashrc`,
+  `~/.bash_profile`, etc. Every agent has its own directory functioning
+  as its "home": `AGENTS.md`, `MEMORY.md`, `runtime.json`,
+  `WACKYPUB_ALLOWED_AGENTS`, `WACKYPUB_ROOT` as the workspace-level marker
+  - same idea, same reason (config as plain files a human can read/edit
+  directly, not a database or hidden state).
+- **Looks up available executables.** `bash` resolves a command name
+  against `$PATH`. An agent's `tools/` directory (D14) is the same lookup
+  - what's callable is whatever's discoverable there, nothing more.
+- **Piping between commands.** `bash` pipes let one command's output feed
+  another without going through a human. The scratchpad + `<SCRATCHPAD_DATA
+  id="X" />` stdin macro (D18) is the rough equivalent for agents - moving
+  data between tool calls without forcing it through the model's own
+  context/output tokens.
+
+Worth writing up properly in the README's philosophy section once there's
+a natural moment for it - it's a genuinely accurate analogy, not just a
+catchy line, and might be a better hook than the current "every capability
+is a file" framing alone.
+
+## Consider an explicit hardlink/inode check in `files-rw`'s `Access.Resolve`
+
+Found via the first `files-rw` swarm pen-test (`docs/files-rw-security-test.md`):
+a hardlink planted inside a writable root, pointing at `FILES_RW_ACCESS`,
+currently gets blocked only because `WriteFile` (`pkg/filesrw/ops.go`)
+writes atomically (temp file + rename), which severs the hardlink instead
+of writing through the shared inode. That's a real, verified protection,
+but it's incidental to why the function is atomic, not a deliberate
+defense - already called out in `WriteFile`'s doc comment so nobody removes
+the temp+rename pattern without noticing. Whether it's worth adding an
+explicit check (e.g. comparing `os.SameFile` between a resolved target and
+`FILES_RW_ACCESS`, or checking inode/device numbers directly) so the
+protection is intentional rather than a side effect is an open question -
+no clear second attack path currently exploits the gap, so this is a
+robustness nice-to-have, not an urgent fix.

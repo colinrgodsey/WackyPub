@@ -30,6 +30,17 @@ never leak into the next one.
 
 ## Setup: the local trusted agent's job, not a fixed script
 
+**Prerequisite: load `skills/wackypub/SKILL.md` first.** Standing up a
+swarm test means driving the `wackypub` CLI yourself - through `docker
+exec`, to configure the coordinator and every worker, and to sanity-check
+the sandbox before handing it to the swarm - not just describing it. That
+skill is the dense, load-bearing reference for exactly how `wackypub`
+works (workspace/agent layout, `tools/`/`skills/` discovery,
+`WACKYPUB_ALLOWED_AGENTS` format, the CLI's own `--help` conventions - see
+its own "Setting Up an Agent & Swarm From Scratch" section). Without it,
+you're reconstructing that knowledge from scratch mid-setup instead of
+just having it.
+
 There is deliberately no automation script for standing up a swarm test.
 Whoever runs one - in practice, a local trusted CLI agent (e.g. Claude Code)
 already operating in this repo with `.agents/` loaded - is expected to
@@ -53,15 +64,20 @@ if a run reveals the coordinator or worker persona needs to behave
 differently, update the template, not just that one run's copy.
 
 Judgment calls the setting-up agent needs to make per run, informed by this
-doc and `SECURITY_TESTING.md`: how many workers; whether workers get the
-target tool's source (white-box) or just the binary (black-box); what
-sandbox/grant to hand the target tool (e.g. a `files-rw` test's
-`FILES_RW_ACCESS`, with some planted content that should be unreachable);
-which model to point `runtime.json` at (a genuinely capable one - see
-`SECURITY_TESTING.md`'s "who's qualified" bar, not the lightweight default
-used for routine dev work); and `iterations` for this run. All of these end
-up recorded in the resulting `docs/<tool>-security-test.md` report, not
-just decided silently.
+doc and `SECURITY_TESTING.md`: how many workers; what sandbox/grant to hand
+the target tool (e.g. a `files-rw` test's `FILES_RW_ACCESS`, with some
+planted content that should be unreachable); which model to point
+`runtime.json` at (a genuinely capable one - see `SECURITY_TESTING.md`'s
+"who's qualified" bar, not the lightweight default used for routine dev
+work); and `iterations` for this run. All of these end up recorded in the
+resulting `docs/<tool>-security-test.md` report, not just decided silently.
+
+**White-box by default, not a judgment call.** This is an open-source
+project - the source is available either way, so black-box testing would
+only be simulating a constraint that doesn't actually exist here. Give
+workers read access to the target tool's own source alongside the binary
+unless there's a specific reason not to for a given run (worth noting in
+that run's report if so).
 
 ## Roles
 
@@ -101,12 +117,63 @@ Does not attack the tool directly. Runs the process:
 
 Each worker gets the tool under test wired up exactly as a real deployment
 would (symlinked into their own `tools/`, invoked through `run_command` like
-any other agent tool - not a mocked interface), plus source read access for
-white-box rounds where that's appropriate. Each round, a worker either:
+any other agent tool - not a mocked interface), plus source read access -
+white-box by default (see Setup above). Each round, a worker either:
 proposes ideas when asked, or executes a specific assigned idea against a
 live instance and reports back precisely what happened - including ideas
 that didn't pan out; a clean "tried X, blocked as expected, here's the
 error" is still a useful record, not just successes.
+
+## Operational notes (learned running the first real test)
+
+- **Name the host-side workspace directory with a leading dot** (e.g.
+  `.swarm-ws`, not `swarm-ws`) when white-boxing a target tool that's part
+  of this same Go module - not just gitignored. A white-box run copies the
+  target's Go source into each worker's directory (see "white-box by
+  default" above), and `go build ./...`/`go test ./...` walk the whole repo
+  tree by default - a non-dot-prefixed workspace directory means those
+  copied source files (and their `_test.go` files) get picked up and
+  compiled/run as if they were real packages, silently duplicating test
+  output on every local `go test ./...`. Go's own tooling already skips any
+  directory starting with `.` or `_` (plus a directory literally named
+  `testdata`) for exactly this purpose - no separate ignore-file mechanism
+  needed, just use the naming convention from the start.
+- **`docker exec` needs `-i` to attach stdin.** Piping content into a
+  command inside the container from the host (feeding a worker's stdin
+  manually, verifying a finding yourself) silently does nothing without it
+  - the command still "succeeds," it just runs against empty input. This
+  produced one real false-negative moment during the first run's manual
+  verification pass; always double-check with `-i` before trusting a
+  stdin-dependent result run this way.
+- **Cancelling a stuck coordinator or worker.** Killing the host-side
+  `docker exec` wrapper process (e.g. the PID from a backgrounded `docker
+  exec ... &`) does **not** kill the process running inside the container -
+  `docker exec` exiting on the host doesn't propagate. Find and kill the
+  real process instead: `docker exec <container> ps aux | grep wackypub`,
+  then `docker exec <container> kill -9 <pid>`. The session lock releases
+  automatically when the process dies (a kernel-level `flock` tied to its
+  file descriptors, not something needing manual cleanup) - confirmed live,
+  a fresh `agent add` succeeded immediately after killing a stuck run. (See
+  `.agents/TODOS.md`'s "no way to cancel an in-flight agent task" entry -
+  this is the working-but-manual procedure until that exists properly.)
+- **Expect some workers to just time out**, especially less-mainstream
+  backend models at high reasoning effort - this is a real backend
+  reliability issue (see `.agents/TODOS.md`'s HTTP timeout entry), not a
+  swarm-process bug. The coordinator persona already handles it fine on its
+  own without extra kickoff guidance: notices a worker's calls keep
+  failing, gives up on that worker after a retry or two, and proceeds with
+  whichever workers did respond.
+- **`patch` is preinstalled in the base image** (see `Dockerfile`)
+  specifically so a `files-rw`-style patch-subcommand attack doesn't go
+  untested for lack of the binary, the way it did on the first run (had to
+  `apt-get install` it live mid-test, then re-verify that one idea by hand,
+  to close the gap).
+- **Kickoff framing**: giving the coordinator a rough total idea-count
+  target ("~10 ideas") instead of a strict round count worked fine in
+  practice - it translated that into however many rounds it judged
+  necessary (2, on the first run) and reported the actual round count used
+  in its final report, exactly as required. Either framing is fine;
+  whichever is clearer for the specific test.
 
 ## Report requirement: `docs/<tool-name>-security-test.md`
 
