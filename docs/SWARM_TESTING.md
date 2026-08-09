@@ -28,6 +28,14 @@ running the test. Destroy and recreate the container between test runs so
 a prior round's fixtures (symlinks, planted files, whatever the swarm built)
 never leak into the next one.
 
+The container runs as root, so anything the swarm creates in the
+bind-mounted host workspace (fixture files, symlinks, planted content)
+ends up root-owned on the host. A plain host-side `rm -rf` on the old
+workspace directory will hit `Permission denied` on those - clean it out
+via a throwaway container instead: `docker run --rm -v
+<host-workspace>:/cleanup alpine rm -rf /cleanup/*` (or just `/cleanup` and
+recreate the directory after).
+
 ## Setup: the local trusted agent's job, not a fixed script
 
 **Prerequisite: load `skills/wackypub/SKILL.md` first.** Standing up a
@@ -85,31 +93,36 @@ that run's report if so).
 
 Does not attack the tool directly. Runs the process:
 
-1. **Propose.** Prompt every worker for a batch of candidate attack ideas
-   against the tool's stated boundary (what should be impossible; what the
-   grant does and does not cover).
-2. **Collect.** Gather all worker-submitted ideas for the round.
+1. **Propose.** Prompt every worker for exactly 3 new candidate attack
+   ideas against the tool's stated boundary (what should be impossible;
+   what the grant does and does not cover), telling each worker what's
+   already been proposed so far so its 3 slots go toward new angles, not
+   repeats. A worker reporting nothing new is a legitimate answer.
+2. **Collect.** Gather all worker-submitted ideas for the round (up to 3
+   per worker), noting which worker proposed each one.
 3. **Assess & deduplicate.** Merge near-duplicate ideas, discard ones that
    don't actually apply to this tool/boundary, and keep the rest as this
    round's candidate list. Record discarded/merged ideas too (see report
    requirement below) - a future run shouldn't waste a round rediscovering
    an idea already ruled out.
-4. **Top up if thin.** If the surviving idea set is small or repetitive,
-   go back to step 1 and ask workers for more - specifically pointing out
-   what's already covered, so the next batch reaches further. Repeat within
-   the round until the idea set is healthy or a per-round retry budget is
-   spent.
-5. **Assign & execute.** Once ideas are settled, hand them out to workers to
-   actually run against a live instance of the tool (not reason about
-   hypothetically) and report back: exact commands, exact output, whether
-   the goal was achieved.
-6. **Compile.** Gather worker execution reports into the round's findings.
-7. **Iterate.** Repeat the whole propose -> dedupe -> execute -> report cycle
+4. **Assign & execute.** Dispatch every idea that survived dedup this
+   round, preferring to send each idea back to the worker who originally
+   proposed it (most context on their own idea) - reassign only if that
+   worker's unavailable. Each assigned worker actually runs its idea(s)
+   against a live instance of the tool (not reason about hypothetically)
+   and reports back: exact commands, exact output, whether the goal was
+   achieved.
+5. **Compile.** Gather worker execution reports into the round's findings.
+6. **Iterate.** Repeat the whole propose -> dedupe -> execute -> report cycle
    for `iterations` rounds. `iterations` is not fixed by this process doc -
    it's chosen per test run and declared in that run's report (see below).
    Later rounds should build on earlier findings (a partial weakness found
    in round 2 is exactly what round 3's ideas should try to push further).
-8. **Write the report.** Produce `docs/<tool-name>-security-test.md` (exact
+   If every worker runs out of new ideas before `iterations` is reached,
+   that's expected, not a failure - stop there rather than running empty
+   rounds, and report the actual round count reached alongside the
+   requested one.
+7. **Write the report.** Produce `docs/<tool-name>-security-test.md` (exact
    contents below) and update `.agents/SECURITY_TESTING.md`'s state for
    that tool.
 
@@ -124,7 +137,7 @@ live instance and reports back precisely what happened - including ideas
 that didn't pan out; a clean "tried X, blocked as expected, here's the
 error" is still a useful record, not just successes.
 
-## Operational notes (learned running the first real test)
+## Operational notes (learned running real tests)
 
 - **Name the host-side workspace directory with a leading dot** (e.g.
   `.swarm-ws`, not `swarm-ws`) when white-boxing a target tool that's part
@@ -174,6 +187,27 @@ error" is still a useful record, not just successes.
   necessary (2, on the first run) and reported the actual round count used
   in its final report, exactly as required. Either framing is fine;
   whichever is clearer for the specific test.
+- **Always set a memory limit on the container** (`docker run --memory
+  8g ...`, or `docker update --memory=8g --memory-swap=8g <container>` on
+  one already running). Skipped this on the second run, and a worker's
+  resource-exhaustion idea (`base64 /dev/urandom | head -c 1G`) hit an
+  apparent bug in the container's `base64` (`uutils-coreutils`, not GNU -
+  didn't respect the downstream `head -c` limit) and grew to 43GB RSS on
+  the *host*, with no cap to stop it. The container's disposability
+  protects against data/filesystem damage, not against a worker exhausting
+  real host resources - that needs an actual cgroup limit, not just "it's
+  throwaway." Killing the runaway process alone wasn't enough either - the
+  worker's agent turn retried the identical command immediately; had to
+  kill the worker's whole in-flight `wackypub agent <worker> prompt`
+  process (not just the spawned shell command) to stop the retry loop.
+- **Interrupting a long run cleanly**: killing the coordinator's top-level
+  `wackypub agent prompt coordinator` process mid-run (e.g. to cap cost on
+  a 10-round request) leaves whatever rounds already completed intact in
+  each agent's `session.jsonl` - a follow-up prompt telling it to stop and
+  write the report now (instead of continuing) produces a report scoped to
+  what was actually completed, with an honest note on how many rounds were
+  requested vs. finished and why. No need to let a run finish all requested
+  rounds to get a usable report out of it.
 
 ## Report requirement: `docs/<tool-name>-security-test.md`
 

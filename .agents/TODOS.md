@@ -239,20 +239,49 @@ a natural moment for it - it's a genuinely accurate analogy, not just a
 catchy line, and might be a better hook than the current "every capability
 is a file" framing alone.
 
-## Consider an explicit hardlink/inode check in `files-rw`'s `Access.Resolve`
+## `files-rw`: fd-based access checking, to close the hardlink-read and TOCTOU gaps
 
-Found via the first `files-rw` swarm pen-test (see DECISIONS.md D23 - the
-report itself was deleted per `SECURITY_TESTING.md`'s invalidation rule
-once D23's changes landed, but the finding is still real and unfixed):
-a hardlink planted inside a writable root, pointing at `FILES_RW_ACCESS`,
-currently gets blocked only because `WriteFile` (`pkg/filesrw/ops.go`)
-writes atomically (temp file + rename), which severs the hardlink instead
-of writing through the shared inode. That's a real, verified protection,
-but it's incidental to why the function is atomic, not a deliberate
-defense - already called out in `WriteFile`'s doc comment so nobody removes
-the temp+rename pattern without noticing. Whether it's worth adding an
-explicit check (e.g. comparing `os.SameFile` between a resolved target and
-`FILES_RW_ACCESS`, or checking inode/device numbers directly) so the
-protection is intentional rather than a side effect is an open question -
-no clear second attack path currently exploits the gap, so this is a
-robustness nice-to-have, not an urgent fix.
+Found via two `files-rw` swarm pen-tests (see DECISIONS.md D22-D24;
+current report at `docs/files-rw-security-test.md`, state `n` in
+`SECURITY_TESTING.md`) and confirmed live, not just reasoned about:
+
+1. **Hardlink read bypass, including cross-agent.** `ln
+   target/secret.txt ./scratch/hl && files-rw read ./scratch/hl` succeeds
+   - a hardlink placed inside an allowed directory gives an out-of-bounds
+   inode an in-bounds name, and `Access.Resolve`'s path-prefix check has
+   no way to know the two paths share storage. Generalizes past a single
+   agent's own out-of-bounds files to **other agents' files entirely**
+   (`ln /ws/worker-sonnet/target/secret.txt ./scratch/hl` from a
+   *different* worker's directory, confirmed live) - not excused by "the
+   agent already has shell access to its own sandbox," since it's one
+   agent reading a different agent's private files.
+2. **TOCTOU race between `Access.Resolve()` and the actual I/O, no
+   hardlink needed.** `Access.Resolve()` returns a path string; the real
+   filesystem operation happens afterward as a separate step against that
+   same string, with no file descriptor held open across the gap. A
+   background process racing to swap the file's content between those two
+   steps wins 99-100% of the time (confirmed live against both `read` and
+   `copy`; the same structural gap exists by inspection in `edit`,
+   `patch`, `move`, `delete` too).
+
+Both share the same fix shape: open the file (`O_NOFOLLOW`) as part of, or
+immediately after, the access check, and do all subsequent I/O through
+that already-open file descriptor rather than re-resolving the path string
+at syscall time. This collapses the TOCTOU window to nothing and, as a
+side effect, makes the hardlink case checkable too (validate the open fd's
+identity - e.g. via `os.SameFile` against everything reachable under the
+allowed roots by a non-hardlink path - rather than just the path string
+that produced it).
+
+Deliberately not implemented yet (D24): this touches the core of
+`Access.Resolve` and every call site in `pkg/filesrw/ops.go` broadly
+enough to warrant its own dedicated pass rather than a rushed fix bolted
+onto an already-large round of findings. Needs a fresh swarm run against
+the fix once it lands - `files-rw` stays at `n` until then, not reset to
+`?`, since this is a confirmed finding, not an invalidated one.
+
+(The earlier, narrower version of this TODO - an explicit hardlink/inode
+check specifically for the `FILES_RW_ACCESS`-hardlink case, incidentally
+mitigated today by `WriteFile`'s atomic rename - is superseded by the
+above: the fd-based fix covers that case too, and the read-side gap it
+didn't address turned out to be the more serious one.)

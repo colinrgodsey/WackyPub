@@ -50,22 +50,19 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 
 ## Checklist
 
-- **`?` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
+- **`n` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
   copy/move/delete/list gated by a per-directory `FILES_RW_ACCESS`
-  allowlist (see DECISIONS.md D22, D23). Reset from `y` to `?` per the
-  invalidation rule: the 2026-08-08 swarm test (19 ideas, 14+ executed,
-  all blocked) covered `read`/`write`/`edit`/`patch`/`list` as they existed
-  at commit `f9ce0d2`, before D23 added `copy`/`move`/`delete` (new
-  write/delete-capable commands with their own access-check call sites the
-  swarm never saw) and changed `read`'s default output and `patch`'s
-  validation logic. That report is deleted per the same rule - it describes
-  behavior that no longer matches the code. Verified directly by the
-  implementer (not a swarm pass, doesn't earn `y`/`n` - see "who's
-  qualified" above): `copy`'s source/destination grants, `move`'s
-  dual-write-grant requirement, `delete`'s self-access denial on
-  `FILES_RW_ACCESS`, the 200KB read cap, and `patch`'s non-unified-diff
-  rejection all held under direct testing. Pending a fresh swarm run
-  against the current command surface.
+  allowlist (see DECISIONS.md D22, D23, D24). Swarm-tested 2026-08-08
+  against commit `64f341f` (see
+  [`docs/files-rw-security-test.md`](../docs/files-rw-security-test.md)):
+  7 confirmed bypasses, most seriously a hardlink read that generalizes to
+  **cross-agent** file reads (one agent reading a *different* agent's
+  files, not just its own out-of-bounds ones) and a TOCTOU race between
+  `Access.Resolve()` and the actual I/O that needs no hardlink at all
+  (99-100% reliable). Root cause and fix shape recorded in D24; not fixed
+  in this pass - `.agents/TODOS.md` has the scoped fd-based rewrite. This
+  stays `n` (not reset to `?`) until that fix lands and a fresh swarm run
+  against it produces a new report.
 
 ## Not yet on this list
 
