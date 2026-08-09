@@ -671,3 +671,13 @@ Implemented in `pkg/agent/scratchpad.go`, `pkg/agent/sdk.go`, `pkg/agent/agent_f
 
 **Why**: fixes a real, measured resource-waste problem (full-blob read/parse/rewrite on every operation, including read-only ones) and incidentally closes a real cross-process locking gap that was only ever papered over, not fixed, by D27's session-lock workaround. Found while reviewing D29 and evaluating whether `files-rw` had an equivalent problem (it doesn't, per-file already) - prompted checking whether the scratchpad system had the same shape of issue, and it did, worse.
 
+## D31: `a2a-announce-self` skill - agents self-identify by convention, not by injected metadata
+
+Implemented as `skills/a2a-announce-self/SKILL.md`, `always_load: true`. Resolves the previously-logged "a receiving agent has no idea whether it was called by another agent or a human" TODO, choosing the skill-based direction that TODO had already left as the current lean.
+
+**Mechanics**: the skill instructs an agent to prefix any message it sends to another agent (`wackypub agent <id> prompt "..."`) with a one-line preamble - `[Message from agent: <id>]` - naming its own agent ID before the actual message content. Nothing enforces this server-side; it's a convention an `always_load` skill teaches every agent that has it loaded, the same way `WACKYPUB_ALLOWED_AGENTS`'s self-targeting gotcha is taught via `scratchpad-efficiency` rather than special-cased in code.
+
+**Why self-reported over `WACKYPUB_CALL_CHAIN`-derived**: the TODO's hard-coded alternative (have `wackypub` itself read `WACKYPUB_CALL_CHAIN` and auto-inject the caller's ID) would be more reliable - a caller can't misreport an ID it never had to type - but rigid, and solves a reliability problem ("what if the caller lies") that doesn't come up in the motivating case: cooperative agents in the same workspace that just need to know who they're talking to, not agents defending against an adversarial peer. Self-reporting is enough for that, costs a single line, and leaves room for a caller to say more about itself than a bare ID if useful later. The hard-coded, `WACKYPUB_CALL_CHAIN`-backed version remains available to build if a use case ever needs sender identity that can't be spoofed - not done here.
+
+**Why now**: surfaced by live use, not the earlier design discussion alone - agents in a live multi-agent test were seen reading each other's `MEMORY.md` to reconstruct context because they had no idea who else was in the conversation, in a workspace where the cross-agent read access was itself legitimate (gated correctly by `WACKYPUB_ALLOWED_AGENTS`) but the resulting confusion wasn't - a cheap, real fix for a problem that had already shown up, not a hypothetical one.
+

@@ -26,9 +26,11 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "files-rw",
-	Short: "Per-directory allowed file read/write/edit/patch/copy/move/delete/list tool for AI agents",
+	Short: "Per-directory allowed file read/write/edit/patch/copy/move/delete/list/tail/append tool for AI agents",
 	Long: `files-rw provides an explicit, per-directory-scoped file manipulation tool suite
-(read, write, edit, patch, copy, move, delete, list) for AI agents, gated by a FILES_RW_ACCESS allowlist file in the current working directory.`,
+(read, write, edit, patch, copy, move, delete, list, tail, append) for AI agents, gated by a FILES_RW_ACCESS allowlist file in the current working directory.
+
+There is no separate directory-creation command: "write" and "append" both create any missing parent directories automatically, so creating a file inside a not-yet-existing folder creates the folder as a side effect.`,
 	SilenceUsage: true,
 }
 

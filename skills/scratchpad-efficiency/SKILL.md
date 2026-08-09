@@ -1,7 +1,7 @@
 ---
 name: scratchpad-efficiency
 description: Advanced scratchpad patterns, zero-token inter-agent data hand-offs, macro templating, and line-level search/pagination strategies
-always_load: false
+always_load: true
 ---
 # Scratchpad Efficiency & Swarm Communication Patterns
 

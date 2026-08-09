@@ -313,7 +313,7 @@ history versus just compressing it - worth designing before some
 long-running agent actually hits this, rather than discovered live the
 way most of this project's other gaps have been.
 
-## A receiving agent has no idea whether it was called by another agent or a human
+## A receiving agent has no idea whether it was called by another agent or a human (Resolved: `a2a-announce-self` skill, D31)
 
 Traced through the actual cross-agent call path: `AppendSessionTurn`
 wraps whatever text into a plain `{"role":"user","parts":[{"text":...}]}`
@@ -353,6 +353,17 @@ Current lean is skill-based, for the flexibility - but not yet decided,
 and skill-based still leaves open how (or whether) `WACKYPUB_CALL_CHAIN`
 gets surfaced to the agent at all, since the model has no innate
 visibility into its own process's environment variables.
+
+**Resolved skill-based, self-reported rather than `WACKYPUB_CALL_CHAIN`-derived**:
+`skills/a2a-announce-self/SKILL.md` (D31), an `always_load: true` skill
+instructing an agent to prefix any message it sends to another agent
+with a one-line `[Message from agent: <id>]` preamble. Deliberately
+doesn't solve the "not just trust self-reported text" reliability
+question raised above - if that ever matters for a specific use case
+(e.g. an adversarial or untrusted peer), the `WACKYPUB_CALL_CHAIN`-based
+hard-coded injection this TODO originally proposed is still there to
+build later. Good enough for the common case: cooperative agents in the
+same workspace that just need to know who they're talking to.
 
 ## `files-rw` has no way to search inside a file's content - probably doesn't need its own, for the single-file case
 
@@ -418,4 +429,47 @@ pointing `read`/`tail` at a multi-GB file could exhaust memory before
 size (or reading in bounded chunks) before `io.ReadAll`, rejecting early
 if the input itself is already unreasonably large - independent of what
 range/line-count was actually requested.
+
+## `always_load` skills drop their `description` when auto-injected
+
+`RenderAutoloadedSkills` (`pkg/agent/skill.go`) renders each always-loaded
+skill as `<SKILL name="X">\n{body}\n</SKILL>` - name and body only. Compare
+the on-demand skill picker (`BuildFolderAgentTools`, `agent_folder.go`),
+which lists every loadable skill as `- {name}: {description}` so the model
+has a one-line pitch to decide whether to `load_skill` it. A skill's
+`description` frontmatter field is only ever rendered while the skill is
+*not* loaded - the instant it's `always_load: true` and its full body gets
+injected, the description that was meant to frame it just disappears.
+
+Probably harmless for a short skill (the body says everything), but for a
+long one - `scratchpad-efficiency` is ~190 lines - a one-line thesis
+before the body would likely help the model orient before reading the
+whole thing. Cheap fix if wanted: prepend the description into the
+`<SKILL>` block, e.g. `<SKILL name="X" description="Y">\n{body}\n</SKILL>`.
+Not done yet, no decision on whether it's worth it.
+
+## `files-rw` has no `mkdir` - directory creation is real but undiscoverable
+
+There's no explicit directory-creation command. `write`/`append` both create
+any missing parent directories as a side effect (`os.MkdirAll` in
+`pkg/filesrw/ops.go`, confirmed live - `write allowed/sub/dir/nested.txt`
+creates `sub/` and `dir/` along with the file) - so the capability exists,
+composed the same way D29 resolved "replace the last line" without a new
+primitive. But it's only documented in `write`/`append`'s own per-command
+`--help` text ("creating any missing parent directories"), buried in a
+sentence an agent has no reason to read unless it already suspected
+`write` was the answer. The root `files-rw --help` (`rootCmd.Long` in
+`cmd/files-rw/main.go`) doesn't mention directory creation at all, and
+nothing states outright "there is no mkdir - creating a file inside a
+new folder creates the folder."
+
+Seen live: an agent that wanted to create a folder looked for something
+mkdir-shaped, didn't find one, and got stuck - it never tried writing a
+file into the not-yet-existing folder, which would have worked. A
+capability that only works if you already know to try it isn't really
+discoverable. Cheap fix, no new command needed: state the behavior
+explicitly in `rootCmd.Long` (something like "no separate directory-
+creation command - `write`/`append` create any missing parent
+directories automatically") so it's visible before an agent goes
+looking for `mkdir` and comes up empty.
 

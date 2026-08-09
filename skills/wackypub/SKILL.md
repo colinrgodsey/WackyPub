@@ -1,7 +1,7 @@
 ---
 name: wackypub
-description: Overview of wackypub CLI and self-discovery of core subcommands via --help
-always_load: true
+description: Overview of wackypub CLI and self-discovery of core subcommands via --help. Load before using wackypub.
+always_load: false
 ---
 # WackyPub AI CLI & Self-Discovery Guide
 
