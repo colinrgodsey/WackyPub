@@ -41,22 +41,17 @@ never read by the primary generation path - it only matters for the
 alternate `RunWithRunner` path. Don't assume setting `Instruction` affects
 `generate`/`prompt` output.
 
-## D3: The OpenAI adapter is `achetronic/adk-utils-go`, replaced with a fork
+## D3: The OpenAI adapter is `achetronic/adk-utils-go` (upstream tracking)
 
 `pkg/agent/openai_model.go` wraps `achetronic/adk-utils-go`'s `genai/openai`
-package (which wraps the official `openai-go/v3` SDK), but `go.mod` points
-that import at `github.com/colinrgodsey/adk-utils-go` via a `replace`
-directive.
+package (which wraps the official `openai-go/v3` SDK).
 
 **Why**: a hand-rolled HTTP client adapter previously lived directly in this
 repo. It worked, but only covered plain-text `content`/`reasoning_content`
 and had to be extended by hand for every new provider quirk (tool calls,
 images, OpenRouter's block format, etc.). Switching to the official SDK via
-`adk-utils-go` gets that coverage for free - except the upstream adapter, as
-of the version evaluated, read reasoning correctly on ingest but lost or
-mishandled it on egress (see D5, D6). The fork fixes that. See
-`ADK_UTILS_GO_REASONING_EGRESS_BUG.md` at the repo root for the original bug
-report, and TODOS.md for dropping the fork once upstream catches up.
+`adk-utils-go` gets that coverage for free. Upstream `achetronic/adk-utils-go`
+incorporated dialect-based reasoning handling (`Dialect` interface, OpenRouter, DeepSeek, TextDialect) in commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764`, allowing `go.mod` to track upstream directly without a fork `replace` directive.
 
 ## D4: Migrated from ADK v1 to `google.golang.org/adk/v2`
 

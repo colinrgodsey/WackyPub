@@ -63,7 +63,7 @@ same implementation and documentation without duplicating either.
 |---|---|
 | `google.golang.org/adk/v2` | Google ADK core types (`model.LLM`, `agent.Agent`, `session.Event`) |
 | `google.golang.org/genai` | `genai.Content`/`genai.Part` - the wire format for `session.jsonl` |
-| `github.com/achetronic/adk-utils-go` | OpenAI-compatible `model.LLM` adapter (official `openai-go/v3` SDK underneath) - **replaced with a fork**, `github.com/colinrgodsey/adk-utils-go`, in `go.mod`; see DECISIONS.md D3 |
+| `github.com/achetronic/adk-utils-go` | OpenAI-compatible `model.LLM` adapter (official `openai-go/v3` SDK underneath) - updated to upstream commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764` with Dialects support |
 | `github.com/spf13/cobra` | CLI command tree |
 | `gopkg.in/yaml.v3` | `wackypub.yaml` config (default model, API key) |
 
@@ -81,10 +81,6 @@ go vet ./...
 ### Module Management
 
 ```bash
-go mod tidy
-
-# Bump the adk-utils-go fork to its latest master commit (see DECISIONS.md D3)
-go mod edit -replace github.com/achetronic/adk-utils-go=github.com/colinrgodsey/adk-utils-go@master
 go mod tidy
 ```
 
@@ -350,13 +346,9 @@ on the next request, and OpenRouter rejects the replayed block with a 404.
 Only enable `supportsReasoningDetails` with a pinned `model`. See
 DECISIONS.md D6 and `ADK_UTILS_GO_REASONING_EGRESS_BUG.md` at the repo root.
 
-### The `adk-utils-go` dependency is a fork, pinned by commit pseudo-version
+### The `adk-utils-go` dependency tracks upstream `achetronic/adk-utils-go`
 
-`go.mod` has a `replace` directive pointing at
-`github.com/colinrgodsey/adk-utils-go`, not the upstream
-`github.com/achetronic/adk-utils-go`. It needs to be manually re-pinned
-(`go mod edit -replace ... @master && go mod tidy`) whenever the fork gets a
-new fix - there's no CI or automation keeping it current. See TODOS.md.
+`go.mod` directly tracks `github.com/achetronic/adk-utils-go` (commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764`, which incorporated the `Dialect` interface for reasoning & OpenRouter support).
 
 ### Don't reuse a persistent flag's shorthand on a subcommand
 

@@ -3,7 +3,8 @@ module github.com/colinrgodsey/WackyPubAI
 go 1.25.7
 
 require (
-	github.com/achetronic/adk-utils-go v0.23.0
+	github.com/achetronic/adk-utils-go v0.23.1-0.20260810132742-1f0a646bcdfd
+	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/spf13/cobra v1.10.2
 	google.golang.org/adk/v2 v2.0.0
 	google.golang.org/genai v1.57.0
@@ -16,7 +17,6 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
-	github.com/bluekeyes/go-gitdiff v0.9.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -61,5 +61,3 @@ require (
 	rsc.io/omap v1.2.0 // indirect
 	rsc.io/ordered v1.1.1 // indirect
 )
-
-replace github.com/achetronic/adk-utils-go => github.com/colinrgodsey/adk-utils-go v0.0.0-20260807233702-5d5466b0a72c

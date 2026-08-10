@@ -260,16 +260,9 @@ WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.o
 
 Agent generation turns are executed using ADK's `runner.Runner` pipeline with `FileSessionService` handling reading and appending session history directly to `<agent_id>/session.jsonl`.
 
-### OpenAI Adapter: `github.com/colinrgodsey/adk-utils-go` Fork
+### OpenAI Adapter: Upstream `github.com/achetronic/adk-utils-go`
 
-`pkg/agent/openai_model.go`'s `NewOpenAIModel` is a thin wrapper around [`achetronic/adk-utils-go`](https://github.com/achetronic/adk-utils-go)'s `genai/openai` package, which itself wraps the official `openai-go/v3` SDK. `go.mod` currently points at **a fork**, `github.com/colinrgodsey/adk-utils-go`, via a `replace` directive, because the upstream adapter read reasoning/thinking correctly on ingest but lost it (or mangled it) on egress — see [§7](#7-reasoning--thinking-support) and `ADK_UTILS_GO_REASONING_EGRESS_BUG.md` at the repo root for the original bug writeup. Update the `replace` directive's pinned commit whenever the fork gets new fixes:
-
-```bash
-go mod edit -replace github.com/achetronic/adk-utils-go=github.com/colinrgodsey/adk-utils-go@master
-go mod tidy
-```
-
-Drop the `replace` directive entirely once the fix lands upstream and is tagged.
+`pkg/agent/openai_model.go`'s `NewOpenAIModel` is a thin wrapper around [`achetronic/adk-utils-go`](https://github.com/achetronic/adk-utils-go)'s `genai/openai` package, which itself wraps the official `openai-go/v3` SDK. `go.mod` tracks upstream `achetronic/adk-utils-go` at commit `1f0a646bcdfd07ad5f09363d6cbca3b5c58bd764` (which incorporated the `Dialect` interface for OpenRouter and reasoning handling), eliminating the need for a fork replace directive.
 
 ### ADK `llmagent.Config` Mapping (alternate `RunWithRunner` path)
 

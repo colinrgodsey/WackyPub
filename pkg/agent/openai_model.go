@@ -68,6 +68,18 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		timeoutSec = DefaultHTTPTimeoutSeconds
 	}
 
+	var dialect adkopenai.Dialect
+	if runtimeCfg.SupportsReasoningDetails {
+		dialect = adkopenai.OpenRouter
+	} else if runtimeCfg.ReasoningField != "" {
+		dialect = &adkopenai.TextDialect{
+			WriteField: runtimeCfg.ReasoningField,
+			ReadFields: []string{runtimeCfg.ReasoningField},
+		}
+	} else {
+		dialect = adkopenai.NewTextDialect()
+	}
+
 	return adkopenai.New(adkopenai.Config{
 		APIKey:    runtimeCfg.APIKey,
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
@@ -75,10 +87,9 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		HTTPOptions: adkopenai.HTTPOptions{
 			Client: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
 		},
-		ReasoningEgress:          adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
-		ReasoningField:           runtimeCfg.ReasoningField,
-		SupportsReasoningDetails: runtimeCfg.SupportsReasoningDetails,
-		ExtraBody:                extraBody,
+		Dialect:         dialect,
+		ReasoningEgress: adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),
+		ExtraBody:       extraBody,
 	})
 }
 
