@@ -181,7 +181,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
 			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
 			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n"+
-			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" /> macros (skip_lines/num_lines optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned the same way, so it can be piped straight into another command's args/stdin this way.",
+			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" /> macros (skip_lines/num_lines optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" />, so it can be piped straight into another command's args/stdin this way.",
 		cmdListStr,
 	)
 
@@ -275,10 +275,21 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	if err != nil {
 		absToolPath = toolPath
 	}
+	if evalPath, err := filepath.EvalSymlinks(absToolPath); err == nil {
+		absToolPath = evalPath
+	}
 
 	cmd := exec.CommandContext(ctx, absToolPath, cmdArgs...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
+
+	dotEnv, err := LoadAgentDotEnv(agentDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to load agent .env: %w", err)
+	}
+	for k, v := range dotEnv {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
 
 	if len(args.Env) > 0 {
 		for k, v := range args.Env {
@@ -322,7 +333,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		if err != nil {
 			return "", fmt.Errorf("failed to create stdout scratchpad entry: %w", err)
 		}
-		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q /></STDOUT>", entry.ID)
+		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" /></STDOUT>", entry.ID, entry.Size)
 	} else if len(stdoutBytes) > 0 {
 		stdoutBlock = fmt.Sprintf("<STDOUT>%s</STDOUT>", string(stdoutBytes))
 	} else {
@@ -335,7 +346,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		if err != nil {
 			return "", fmt.Errorf("failed to create stderr scratchpad entry: %w", err)
 		}
-		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q /></STDERR>", entry.ID)
+		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" /></STDERR>", entry.ID, entry.Size)
 	} else if len(stderrBytes) > 0 {
 		stderrBlock = fmt.Sprintf("<STDERR>%s</STDERR>", string(stderrBytes))
 	}
@@ -346,6 +357,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 type FolderAgent struct {
 	AgentID       string
 	AgentDir      string
+	DotEnv        map[string]string
 	RuntimeConfig *RuntimeConfig
 	SystemPrompt  string
 	MemoryPrompt  string
@@ -363,6 +375,12 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 	agentDir := filepath.Join(wsDir, agentID)
 	if !pathExists(agentDir) {
 		return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
+	}
+
+	// 0. Load .env file
+	dotEnv, err := LoadAgentDotEnv(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load agent .env: %w", err)
 	}
 
 	// 1. Load runtime.json
@@ -423,6 +441,7 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 	return &FolderAgent{
 		AgentID:       agentID,
 		AgentDir:      agentDir,
+		DotEnv:        dotEnv,
 		RuntimeConfig: runtimeCfg,
 		SystemPrompt:  expandedPrompt,
 		MemoryPrompt:  memoryContent,

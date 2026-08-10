@@ -142,6 +142,9 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	fmt.Println("Files:")
 	fmt.Printf("  AGENTS.md                 %s\n", presence(insp.AgentsMDExists))
 	fmt.Printf("  MEMORY.md                 %s\n", presence(insp.MemoryMDExists))
+	if insp.DotEnvExists {
+		fmt.Println("  .env                      present")
+	}
 
 	if insp.AllowedAgentsExists {
 		fmt.Printf("  WACKYPUB_ALLOWED_AGENTS   present (%d allowed)\n", len(insp.AllowedAgents))

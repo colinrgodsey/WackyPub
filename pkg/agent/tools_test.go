@@ -36,6 +36,42 @@ func TestExecuteTool(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_SymlinkResolution(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetDir := filepath.Join(tmpDir, "real_target")
+	agentDir := filepath.Join(tmpDir, "agent")
+
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatalf("failed to create target dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(agentDir, "tools"), 0755); err != nil {
+		t.Fatalf("failed to create agent tools dir: %v", err)
+	}
+
+	// Script uses dirname $0 to echo where it thinks it is located
+	realScriptPath := filepath.Join(targetDir, "script.sh")
+	scriptContent := "#!/bin/sh\nDIR=$(dirname \"$0\")\necho \"DIR=$DIR\"\n"
+	if err := os.WriteFile(realScriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatalf("failed to write script: %v", err)
+	}
+
+	// Create symlink inside agent tools directory pointing to real script
+	symlinkPath := filepath.Join(agentDir, "tools", "script_link.sh")
+	if err := os.Symlink(realScriptPath, symlinkPath); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	out, err := executeTool(context.Background(), agentDir, "script_link.sh", symlinkPath, ExecToolArgs{})
+	if err != nil {
+		t.Fatalf("executeTool failed: %v", err)
+	}
+
+	realDir, _ := filepath.EvalSymlinks(targetDir)
+	if !strings.Contains(out, "DIR="+realDir) {
+		t.Fatalf("expected DIR=%s in output (evaluating symlink), got: %s", realDir, out)
+	}
+}
+
 func TestExecuteTool_Failure(t *testing.T) {
 	agentDir := t.TempDir()
 	toolPath := filepath.Join(agentDir, "fail_tool.sh")

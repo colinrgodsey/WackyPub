@@ -148,6 +148,27 @@ func TestExecuteTool_ScratchpadMacroAndOutputRedirection(t *testing.T) {
 	}
 }
 
+func TestExecuteTool_LargeOutputRedirectionWithSize(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// Script that outputs text larger than ScratchpadOutputThreshold (4000 bytes)
+	toolPath := filepath.Join(agentDir, "large_tool.sh")
+	script := "#!/bin/sh\npython3 -c \"print('A' * 5000)\"\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	output, err := executeTool(context.Background(), agentDir, "large_tool.sh", toolPath, ExecToolArgs{})
+	if err != nil {
+		t.Fatalf("executeTool failed: %v", err)
+	}
+
+	// Output must contain <SCRATCHPAD_DATA id="..." size="5001" /> (5000 'A's + newline)
+	if !strings.Contains(output, "<SCRATCHPAD_DATA id=") || !strings.Contains(output, "size=\"5001\"") {
+		t.Fatalf("expected auto-captured tag with size attribute, got: %s", output)
+	}
+}
+
 func TestCreateScratchpad_ConcurrentCreations(t *testing.T) {
 	agentDir := t.TempDir()
 
@@ -198,6 +219,17 @@ func TestSDK_ScratchpadOperations(t *testing.T) {
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatalf("failed to create agent dir: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("test_agent\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
 
 	// 1. CreateScratchpad via SDK
 	text := "Line 1: Hello SDK\nLine 2: Search target\nLine 3: Goodbye SDK\n"

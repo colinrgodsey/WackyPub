@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -9,6 +11,21 @@ func TestSDKAddUserTurnAndReadSession(t *testing.T) {
 	sdk := NewSDK(tempDir)
 
 	agentID := "test_hero"
+	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("test_hero\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
 
 	if err := sdk.AddUserTurn(agentID, "What is your quest?"); err != nil {
 		t.Fatalf("failed to add user turn via SDK: %v", err)
@@ -34,6 +51,20 @@ func TestSDKReadMemory(t *testing.T) {
 
 	agentID := "test_wizard"
 	agentDir := sdk.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("test_wizard\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
 
 	memory, err := sdk.ReadMemory(agentID)
 	if err != nil {

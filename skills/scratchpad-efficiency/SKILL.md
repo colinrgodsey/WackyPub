@@ -21,6 +21,12 @@ The persistent scratchpad (`<agent_id>/scratchpad.json`) is WackyPubAI's out-of-
 
 ## Core Capabilities Quick Reference
 
+> [!TIP]
+> **Automatic `run_command` Output Capture (4,000 Byte Threshold):**
+> Any stdout or stderr output produced by a tool executed via `run_command` that exceeds **4,000 bytes** (`ScratchpadOutputThreshold`) is **automatically captured into a fresh scratchpad entry**.
+> Instead of dumping thousands of tokens into your context window, `run_command` returns placeholder tags containing the entry ID and exact payload size in bytes:
+> `<STDOUT><SCRATCHPAD_DATA id="v8n2" size="15420" /></STDOUT>`
+
 | Action | In-Agent ADK Tool | CLI Command (`run_command` tool) | Lock Behavior |
 |---|---|---|---|
 | **Create** | `create_scratchpad(text)` | `run_command(command="wackypub", args=["agent", "<id>", "scratchpad", "create", "[msg]"])` | Session Lock |
@@ -74,7 +80,7 @@ When **Agent B** wants to copy/mirror a large scratchpad entry (e.g., `"k3p1"`) 
 ### How Auto-Capture Mirrors the Payload
 - Since `wackypub agent agentA scratchpad read k3p1` prints the payload to stdout, if the content exceeds **4,000 bytes** (`ScratchpadOutputThreshold`), WackyPubAI **automatically captures stdout into a fresh local scratchpad entry for Agent B** (`CreatedBy: "run_command"`) and returns:
   ```xml
-  <STDOUT><SCRATCHPAD_DATA id="m9x2" /></STDOUT>
+  <STDOUT><SCRATCHPAD_DATA id="m9x2" size="102400" /></STDOUT>
   ```
 - **Result**: Agent B instantly gets a local scratchpad entry ID (`"m9x2"`) in its own `scratchpad.json` containing the mirrored content.
 - **Advantages over shell pipes**:
@@ -131,10 +137,14 @@ Pass pre-staged prompts, templates, or raw inputs directly to a command tool wit
 
 ## 5. Iterative Search & Slice Navigation
 
-When command tool output exceeds **4,000 bytes**, WackyPubAI automatically captures stdout/stderr into a fresh scratchpad entry and returns tag placeholders:
+When command tool output exceeds **4,000 bytes**, WackyPubAI automatically captures stdout/stderr into a fresh scratchpad entry and returns tag placeholders containing the entry `id` and payload `size` in bytes:
 ```xml
-<STDOUT><SCRATCHPAD_DATA id="v8n2" /></STDOUT>
+<STDOUT><SCRATCHPAD_DATA id="v8n2" size="45000" /></STDOUT>
 ```
+
+### Using the `size` Attribute to Decide Your Strategy
+- **Moderate Size (e.g. 4,000 – 20,000 bytes / ~5–20KB)**: You can slice exact line windows with `get_scratchpad(id, skip_lines, num_lines)`.
+- **Large Size (e.g. 20,000+ bytes / 50KB+)**: Avoid reading the whole payload! Use `search_scratchpad(id, query)` first to pinpoint lines, or pass `<SCRATCHPAD_DATA id="v8n2" />` directly as `stdin`/`args` to another `run_command` tool out-of-band.
 
 ### Optimal 2-Step Inspection Workflow
 

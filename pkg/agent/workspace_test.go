@@ -65,13 +65,30 @@ func TestResolveWorkspaceDir_WalkUp(t *testing.T) {
 }
 
 func TestValidateAgentTarget_CallChain(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, "jax")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, AllowedAgentsFile), []byte("bob\nalice\n"), 0644); err != nil {
+		t.Fatalf("failed to write allowed agents: %v", err)
+	}
+	origCwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+	if err := os.Chdir(agentDir); err != nil {
+		t.Fatalf("failed to chdir to agentDir: %v", err)
+	}
+	defer os.Chdir(origCwd)
+
 	origChain := os.Getenv(CallChainEnvVar)
 	defer os.Setenv(CallChainEnvVar, origChain)
 
 	os.Setenv(CallChainEnvVar, "bob,jax")
 
 	// Target 'bob' should fail because it's already in CallChainEnvVar
-	_, err := ValidateAgentTarget("bob")
+	_, err = ValidateAgentTarget("bob")
 	if err == nil {
 		t.Fatalf("expected deadlock error for agent already in call chain")
 	}

@@ -425,10 +425,10 @@ Agents can store text payloads and intermediate command output in a persistent, 
 **`run_command` I/O integration** (see D17 for `run_command` itself):
 - `args[]` entries and a new `stdin` template string both support inline `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` macro expansion, resolved server-side against stored scratchpad content *before* the subprocess is built - never round-tripping the data through model-generated tokens. This replaces the old bare `stdin_scratchpad_id` integer field: `stdin` is now a template (which can be just the macro alone, or the macro embedded in a larger string with a prefix/suffix).
 - Any single argument, after macro expansion, that exceeds 500,000 bytes fails with an explicit internal error before `exec` is ever called (`"expanded argument exceeds 500000 bytes (was N) - use stdin/stdout scratchpad redirection instead"`) rather than surfacing a raw OS `E2BIG`.
-- `run_command` is the only tool that auto-creates scratchpad entries from its own output, since it's the only unbounded-output producer in the system (`create_scratchpad`/`get_scratchpad`/`list_scratchpads` all have naturally small, self-limiting output). Past a size threshold, stdout/stderr are each captured into a fresh scratchpad entry instead of being inlined; the response is tagged either way so the shape is uniform and self-documenting:
-  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT><STDERR><SCRATCHPAD_DATA id="k3p2" /></STDERR>` (both large)
-  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>` (only stdout was large; nothing on stderr)
-  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT><STDERR>low memory</STDERR>` (stdout large, stderr small enough to inline)
+- `run_command` is the only tool that auto-creates scratchpad entries from its own output, since it's the only unbounded-output producer in the system (`create_scratchpad`/`get_scratchpad`/`list_scratchpads` all have naturally small, self-limiting output). Past a size threshold (`ScratchpadOutputThreshold`), stdout/stderr are each captured into a fresh scratchpad entry instead of being inlined; the response is tagged either way so the shape is uniform and self-documenting (including the payload `size` in bytes):
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" size="4500" /></STDOUT><STDERR><SCRATCHPAD_DATA id="k3p2" size="4100" /></STDERR>` (both large)
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" size="4500" /></STDOUT>` (only stdout was large; nothing on stderr)
+  - `<STDOUT><SCRATCHPAD_DATA id="k3p1" size="4500" /></STDOUT><STDERR>low memory</STDERR>` (stdout large, stderr small enough to inline)
   - `<STDOUT>operation complete</STDOUT>` (both small enough to inline directly)
 - `env` map values are explicitly **not** macro-expanded - env vars are expected to stay small, and adding a second expansion surface for something that doesn't need it isn't worth the complexity.
 
@@ -680,4 +680,54 @@ Implemented as `skills/a2a-announce-self/SKILL.md`, `always_load: true`. Resolve
 **Why self-reported over `WACKYPUB_CALL_CHAIN`-derived**: the TODO's hard-coded alternative (have `wackypub` itself read `WACKYPUB_CALL_CHAIN` and auto-inject the caller's ID) would be more reliable - a caller can't misreport an ID it never had to type - but rigid, and solves a reliability problem ("what if the caller lies") that doesn't come up in the motivating case: cooperative agents in the same workspace that just need to know who they're talking to, not agents defending against an adversarial peer. Self-reporting is enough for that, costs a single line, and leaves room for a caller to say more about itself than a bare ID if useful later. The hard-coded, `WACKYPUB_CALL_CHAIN`-backed version remains available to build if a use case ever needs sender identity that can't be spoofed - not done here.
 
 **Why now**: surfaced by live use, not the earlier design discussion alone - agents in a live multi-agent test were seen reading each other's `MEMORY.md` to reconstruct context because they had no idea who else was in the conversation, in a workspace where the cross-agent read access was itself legitimate (gated correctly by `WACKYPUB_ALLOWED_AGENTS`) but the resulting confusion wasn't - a cheap, real fix for a problem that had already shown up, not a hypothetical one.
+
+## D32: `.env` file support in agent workspaces for tool execution
+
+Implemented in `pkg/agent/dotenv.go` and `pkg/agent/agent_folder.go`. Allows agent directories (`<ws_dir>/<agent_id>/.env`) to define environment variables that are automatically loaded into `exec.Cmd.Env` when executing discovered tools via `run_command`.
+
+**Location & Format**:
+- `.env` file at `<ws_dir>/<agent_id>/.env` (parsed via `ParseDotEnv` helper in `pkg/agent/dotenv.go`).
+- Supports standard `.env` line formats: `KEY=VAL`, `export KEY=VAL`, double-quoted strings (`"..."` with unescaping), single-quoted strings (`'...'`), blank lines, and `#` comments. Missing file (`os.IsNotExist`) is handled silently (returns empty map, no error).
+
+**Environment Precedence & Isolation**:
+- **Precedence Order**: Host process environment (`os.Environ()`) < Agent `.env` (`<agentDir>/.env`) < Invocation `args.Env` (from LLM tool call).
+- **Execution Isolation**: Variables from `.env` are loaded per-agent into `FolderAgent` (and `LoadAgentDotEnv`) and passed to `executeTool` during `run_command` invocation. The global process environment (`os.Setenv`) is **never** mutated, preserving thread-safety for concurrent `AgentSDK` callers.
+
+**Deferred**:
+- Workspace-level fallback (`<ws_dir>/.env`) and using `.env` for LLM model adapter API keys are explicitly deferred. `.env` is strictly scoped to tool execution environment.
+
+**Why**: Tool binaries in `tools/` often require credentials, database URIs, or execution flags. Stashing these in `.env` avoids hardcoding secrets in `runtime.json` or forcing the LLM to supply sensitive values in `args.Env` on every turn.
+
+## D33: Standardize agent-to-agent metadata via `AGENT2AGENT` JSON environment variable
+
+Implemented in `pkg/agent/a2a.go` and `pkg/agent/workspace.go`. Standardizes inter-agent communication and call-chain propagation using the Agent2Agent (A2A) protocol metadata format.
+
+**Payload Structure**:
+- `AGENT2AGENT` environment variable carries a dense (minified) JSON payload:
+  `{"caller_id":"<id>","call_chain":["id1","id2"],"trace_id":"<id>","metadata":{...}}`
+- `caller_id`: The immediate caller agent ID.
+- `call_chain`: Ordered array of agent IDs in the active execution path used for cycle/deadlock prevention (supersedes legacy `WACKYPUB_CALL_CHAIN`).
+- `trace_id`: Optional correlation ID for multi-agent swarm flows (auto-generated if empty).
+- `metadata`: Key-value map for out-of-band context flags.
+
+**Validation & Propagation (`ValidateAgentTarget`)**:
+- Ingests `AGENT2AGENT`. If `AGENT2AGENT` is missing, falls back to parsing legacy `WACKYPUB_CALL_CHAIN` CSV strings for backward compatibility.
+- Rejects calls if `targetAgentID` already exists in `call_chain` (deadlock cycle prevention).
+- Appends `targetAgentID`, sets `caller_id`, serializes to dense JSON, and sets `os.Setenv("AGENT2AGENT", json)` for the duration of the target command, restoring the original environment state on cleanup.
+
+**Why**: Standardizing on A2A metadata enables seamless interoperability with external agent platforms while providing receiving agents with reliable, un-spoofable caller identity and trace context.
+
+## D34: Bundled `wackypub` skill via `go:embed` and `wackypub --skill` CLI flag
+
+Implemented in `main.go` and `cmd/root.go`. Embeds `skills/wackypub/SKILL.md` directly into the `wackypub` binary using Go's `//go:embed` directive and exposes it via `wackypub --skill` flag and `wackypub skill` subcommand.
+
+**Mechanics**:
+- `main.go` uses `//go:embed skills/wackypub/SKILL.md` to embed the single source of truth skill file at build time with zero content duplication.
+- `wackypub --skill` (persistent flag) prints the embedded `SKILL.md` text directly to stdout and exits `0`.
+- `wackypub skill` (subcommand) also prints the embedded skill text to stdout for CLI invocation consistency.
+
+**Why**: Allows LLMs, external agent platforms, and human operators to instantly inspect or load the `wackypub` skill directly from the CLI binary (`wackypub --skill`), mirroring patterns in tool CLIs (like `qmd --skill`), without requiring external file path resolution or code duplication.
+
+
+
 

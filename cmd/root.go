@@ -16,8 +16,22 @@ var (
 	modelName    string
 	apiKey       string
 	maxToolTurns int
+	showSkill    bool
 	cfg          *config.Config
+
+	// BundledSkill holds the embedded skills/wackypub/SKILL.md text passed from main.go (D34).
+	BundledSkill string
 )
+
+var skillCmd = &cobra.Command{
+	Use:   "skill",
+	Short: "Print the bundled wackypub skill (SKILL.md) to stdout and exit",
+	Long:  "Prints the embedded wackypub skill guidance (skills/wackypub/SKILL.md) directly to stdout.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fmt.Print(BundledSkill)
+		return nil
+	},
+}
 
 // RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
@@ -27,7 +41,19 @@ var RootCmd = &cobra.Command{
 
 Built on top of Google Agent Development Kit (ADK) in Go, WackyPubAI supports workspace agent directories,
 OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and auto-compaction.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if showSkill {
+			fmt.Print(BundledSkill)
+			return nil
+		}
+		return cmd.Help()
+	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if showSkill {
+			fmt.Print(BundledSkill)
+			os.Exit(0)
+		}
+
 		var err error
 		cfgPath := cfgFile
 		if cfgPath == "" {
@@ -76,4 +102,6 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
+	RootCmd.PersistentFlags().BoolVar(&showSkill, "skill", false, "Print the bundled wackypub skill (SKILL.md) to stdout and exit")
+	RootCmd.AddCommand(skillCmd)
 }

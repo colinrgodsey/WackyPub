@@ -78,6 +78,7 @@ type AgentInspection struct {
 
 	AgentsMDExists bool
 	MemoryMDExists bool
+	DotEnvExists   bool
 
 	RuntimeJSONExists    bool
 	RuntimeJSONIsSymlink bool
@@ -193,26 +194,51 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		dir = parent
 	}
 
-	// 2. Deadlock cycle check: CallChainEnvVar
-	chainStr := os.Getenv(CallChainEnvVar)
-	var chain []string
-	if chainStr != "" {
-		for _, raw := range strings.Split(chainStr, ",") {
-			id := strings.TrimSpace(raw)
-			if id != "" {
-				chain = append(chain, id)
-				if id == targetAgentID {
-					return nil, fmt.Errorf("agent %q is already in %s (%s); operation rejected to prevent deadlock cycle", targetAgentID, CallChainEnvVar, chainStr)
-				}
-			}
+	// 2. Deadlock cycle check & A2A Metadata parsing (D16, D33)
+	origA2AEnv := os.Getenv(Agent2AgentEnvVar)
+	origChainEnv := os.Getenv(CallChainEnvVar)
+
+	meta, err := ParseA2AMetadata()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse A2A metadata: %w", err)
+	}
+
+	for _, id := range meta.CallChain {
+		if id == targetAgentID {
+			return nil, fmt.Errorf("agent %q is already in call chain (%s); operation rejected to prevent deadlock cycle", targetAgentID, strings.Join(meta.CallChain, ","))
 		}
 	}
 
-	// 3. Update CallChainEnvVar in environment
-	chain = append(chain, targetAgentID)
-	os.Setenv(CallChainEnvVar, strings.Join(chain, ","))
+	// 3. Update AGENT2AGENT & legacy WACKYPUB_CALL_CHAIN in environment
+	callerID := ""
+	if len(meta.CallChain) > 0 {
+		callerID = meta.CallChain[len(meta.CallChain)-1]
+	}
+
+	newChain := append(append([]string{}, meta.CallChain...), targetAgentID)
+	traceID := meta.TraceID
+	if traceID == "" {
+		traceID = GenerateTraceID()
+	}
+
+	newMeta := &A2AMetadata{
+		CallerID:  callerID,
+		CallChain: newChain,
+		TraceID:   traceID,
+		Metadata:  meta.Metadata,
+	}
+
+	denseJSON, err := newMeta.Encode()
+	if err != nil {
+		return nil, fmt.Errorf("failed to encode %s: %w", Agent2AgentEnvVar, err)
+	}
+
+	os.Setenv(Agent2AgentEnvVar, denseJSON)
+	os.Setenv(CallChainEnvVar, strings.Join(newChain, ","))
+
 	cleanup := func() {
-		os.Setenv(CallChainEnvVar, chainStr)
+		os.Setenv(Agent2AgentEnvVar, origA2AEnv)
+		os.Setenv(CallChainEnvVar, origChainEnv)
 	}
 
 	return cleanup, nil
@@ -325,6 +351,7 @@ func InspectAgentDir(wsDir, agentID string) (*AgentInspection, error) {
 
 	insp.AgentsMDExists = pathExists(filepath.Join(agentDir, "AGENTS.md"))
 	insp.MemoryMDExists = pathExists(filepath.Join(agentDir, "MEMORY.md"))
+	insp.DotEnvExists = pathExists(filepath.Join(agentDir, ".env"))
 
 	allowedPath := filepath.Join(agentDir, AllowedAgentsFile)
 	if pathExists(allowedPath) {

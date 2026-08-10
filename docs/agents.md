@@ -37,12 +37,13 @@ WackyPubAI manages agents using a file-system-first architecture. Each agent ope
 ├── WACKYPUB_ROOT          # Empty marker file designating workspace root
 └── <agent_id>/
     ├── runtime.json       # LLM Endpoint, Model & Compaction Settings (or Symlink)
+    ├── .env               # Optional Agent Environment Variables for tool execution (D32)
     ├── AGENTS.md          # System Prompt with @<FILE_PATH> Macro Inclusions
     ├── MEMORY.md          # Long-term Compacted Memories
     ├── session.jsonl      # Sequential Turn History Log (JSON Lines)
     ├── session.lock       # PID-based Exclusive Process Lock
     ├── WACKYPUB_ALLOWED_AGENTS # Opt-in allowlist of target agents for cross-agent calls
-    ├── scratchpad.json    # Persistent session scratchpad slots for large I/O
+    ├── scratchpad/        # Persistent session scratchpad entries (1 file per entry, D30)
     ├── tools/             # Discovered executable tool binaries / scripts
     └── skills/            # Discovered skill folders containing SKILL.md
 ```
@@ -178,7 +179,7 @@ You are Ignis, an ancient wizard.
 #### Key Rules:
 - Each non-empty line (ignoring `#` comments) specifies one allowed target agent ID.
 - **Default Deny-All**: If `WACKYPUB_ALLOWED_AGENTS` is absent from an agent's directory, all cross-agent target invocations from that agent directory are denied.
-- **Deadlock Safety (`WACKYPUB_CALL_CHAIN`)**: In addition to authorization, cross-agent calls propagate `WACKYPUB_CALL_CHAIN` (comma-separated active agent IDs) across subprocess environments. Re-targeting an agent already in the chain is rejected immediately to prevent deadlock cycles.
+- **Deadlock Safety & A2A Metadata (`AGENT2AGENT` / `WACKYPUB_CALL_CHAIN`)**: Cross-agent calls propagate Agent2Agent (A2A) protocol context via the `AGENT2AGENT` environment variable (carrying `caller_id`, `call_chain`, `trace_id`, and `metadata` as dense JSON - D33), falling back to `WACKYPUB_CALL_CHAIN` CSV strings for legacy callers. Re-targeting an agent already in `call_chain` is rejected immediately to prevent deadlock cycles.
 
 ---
 
