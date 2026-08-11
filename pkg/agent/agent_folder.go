@@ -315,6 +315,16 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	// Commit before dispatch, in this process, so any A2A hop this call
+	// makes carries a workspace_revision reflecting everything up to and
+	// including this call - see D35's "Revised again" section for why this
+	// can't live inside ValidateAgentTarget (runs in the spawned child, not
+	// here) and why it applies uniformly to every run_command call rather
+	// than only ones that happen to be cross-agent.
+	wsDir := filepath.Dir(agentDir)
+	agentID := filepath.Base(agentDir)
+	_ = CommitWorkspaceEvent(wsDir, agentID, fmt.Sprintf("tool call (%s)", toolName))
+
 	err = cmd.Run()
 	if err != nil {
 		errStr := stderr.String()
@@ -503,6 +513,8 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	if finalResponse == "" {
 		return "", fmt.Errorf("received empty response from agent")
 	}
+
+	_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "assistant")
 
 	return finalResponse, nil
 }

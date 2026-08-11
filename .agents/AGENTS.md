@@ -27,7 +27,7 @@ Agent guidelines for working in the `WackyPubAI` repository.
 - Have fun! Hell, be funny even.
 - Do not co-author git commits. No mention of your model or harness.
 - Don't jump straight to the implementation. If we decided on something new,
-  write a DECISION, and see if it closes out and TODOs.
+  write a DECISION, and see if it closes out any TODOs.
 
 ## Project Overview
 

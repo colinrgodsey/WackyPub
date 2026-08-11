@@ -62,8 +62,12 @@ type RuntimeConfig struct {
 }
 
 // LoadRuntimeConfig reads and unmarshals runtime.json for an agent.
-// Handles symlinks transparently using os.ReadFile / filepath.EvalSymlinks.
+// Loads workspace root and per-agent .env files, expands environment variables (${VAR} / $VAR) in runtime.json data,
+// and handles symlinks transparently using os.ReadFile / filepath.EvalSymlinks.
 func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
+	// 0. Load root and per-agent .env files into environment
+	_, _ = LoadAgentDotEnv(agentDir)
+
 	runtimePath := filepath.Join(agentDir, "runtime.json")
 
 	// Resolve symlink if runtimePath is a symlink
@@ -82,8 +86,11 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 		return nil, fmt.Errorf("failed to read runtime config from %s: %w", runtimePath, err)
 	}
 
+	// Expand environment variables (${VAR} / $VAR) in runtime.json data
+	expandedData := os.ExpandEnv(string(data))
+
 	var cfg RuntimeConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse runtime.json at %s: %w", runtimePath, err)
 	}
 

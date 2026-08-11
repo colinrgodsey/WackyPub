@@ -58,7 +58,12 @@ func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
 	}
 	defer lock.Release()
 
-	return AppendSessionTurn(agentDir, "user", message)
+	if err := AppendSessionTurn(agentDir, "user", message); err != nil {
+		return err
+	}
+
+	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user")
+	return nil
 }
 
 // GenerateTurn loads the folder agent, checks for compaction, generates the next assistant turn,

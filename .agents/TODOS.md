@@ -500,3 +500,12 @@ every platform or needs to be per-platform; what triggers a release
 (tags vs. something else); whether `skillpack.zip` is just a raw archive
 of `skills/` as-is or something more curated.
 
+## Update `skills/wackypub-ws/SKILL.md` once `wackypub trace` (D36) actually ships
+
+The skill currently states plainly that `wackypub trace` is planned, not yet
+implemented (caught in review - an earlier draft documented it with real
+usage syntax as if it already existed, which it didn't). Once D36 actually
+lands, replace that placeholder section with real usage docs, and make sure
+it's consistent with whatever `-v`/verbosity behavior and commit-hopping
+mechanics actually ship, not just what D36 currently describes on paper.
+

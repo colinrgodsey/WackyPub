@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -16,19 +17,45 @@ var (
 	modelName    string
 	apiKey       string
 	maxToolTurns int
-	showSkill    bool
+	skillFlagVal string
 	cfg          *config.Config
 
-	// BundledSkill holds the embedded skills/wackypub/SKILL.md text passed from main.go (D34).
-	BundledSkill string
+	// BundledA2ASkill holds embedded skills/wackypub-a2a/SKILL.md text passed from main.go (D34).
+	BundledA2ASkill string
+	// BundledWSSkill holds embedded skills/wackypub-ws/SKILL.md text passed from main.go (D34).
+	BundledWSSkill string
 )
 
+// GetSkillContent resolves and returns skill guidance by name (a2a, ws).
+func GetSkillContent(name string) (string, error) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	switch name {
+	case "a2a", "wackypub-a2a":
+		return BundledA2ASkill, nil
+	case "ws", "workspace", "wackypub-ws":
+		return BundledWSSkill, nil
+	case "", "all":
+		return BundledA2ASkill, nil
+	default:
+		return "", fmt.Errorf("unknown skill %q. Available skills: a2a, ws", name)
+	}
+}
+
 var skillCmd = &cobra.Command{
-	Use:   "skill",
-	Short: "Print the bundled wackypub skill (SKILL.md) to stdout and exit",
-	Long:  "Prints the embedded wackypub skill guidance (skills/wackypub/SKILL.md) directly to stdout.",
+	Use:   "skill [a2a|ws]",
+	Short: "Print bundled WackyPub skill guidance (a2a, ws) to stdout and exit",
+	Long:  "Prints embedded skill guidance (skills/wackypub-a2a/SKILL.md or skills/wackypub-ws/SKILL.md) directly to stdout.",
+	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Print(BundledSkill)
+		name := ""
+		if len(args) > 0 {
+			name = args[0]
+		}
+		content, err := GetSkillContent(name)
+		if err != nil {
+			return err
+		}
+		fmt.Print(content)
 		return nil
 	},
 }
@@ -42,15 +69,23 @@ var RootCmd = &cobra.Command{
 Built on top of Google Agent Development Kit (ADK) in Go, WackyPubAI supports workspace agent directories,
 OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and auto-compaction.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if showSkill {
-			fmt.Print(BundledSkill)
+		if cmd.Flags().Changed("skill") {
+			content, err := GetSkillContent(skillFlagVal)
+			if err != nil {
+				return err
+			}
+			fmt.Print(content)
 			return nil
 		}
 		return cmd.Help()
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if showSkill {
-			fmt.Print(BundledSkill)
+		if cmd.Flags().Changed("skill") {
+			content, err := GetSkillContent(skillFlagVal)
+			if err != nil {
+				return err
+			}
+			fmt.Print(content)
 			os.Exit(0)
 		}
 
@@ -102,6 +137,7 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
-	RootCmd.PersistentFlags().BoolVar(&showSkill, "skill", false, "Print the bundled wackypub skill (SKILL.md) to stdout and exit")
+	RootCmd.PersistentFlags().StringVar(&skillFlagVal, "skill", "", "Print bundled WackyPub skill guidance (a2a|ws) to stdout and exit")
+	RootCmd.PersistentFlags().Lookup("skill").NoOptDefVal = "a2a"
 	RootCmd.AddCommand(skillCmd)
 }

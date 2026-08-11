@@ -116,3 +116,70 @@ echo "OVERRIDDEN_VAR=$OVERRIDDEN_VAR"
 		t.Errorf("expected OVERRIDDEN_VAR=from_args in output, got: %s", output)
 	}
 }
+
+func TestRootAndAgentDotEnvHierarchyAndRuntimeExpansion(t *testing.T) {
+	wsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(wsDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed to write root marker: %v", err)
+	}
+
+	// 1. Write workspace root .env
+	rootDotEnv := `
+SHARED_KEY=root_value
+OVERRIDDEN_KEY=root_value
+ROOT_ONLY_KEY=root_secret_123
+`
+	if err := os.WriteFile(filepath.Join(wsDir, ".env"), []byte(rootDotEnv), 0644); err != nil {
+		t.Fatalf("failed to write root .env: %v", err)
+	}
+
+	// 2. Create agent directory 'clerk' with per-agent .env
+	agentDir := filepath.Join(wsDir, "clerk")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	agentDotEnv := `
+OVERRIDDEN_KEY=agent_override_value
+AGENT_ONLY_KEY=agent_secret_456
+`
+	if err := os.WriteFile(filepath.Join(agentDir, ".env"), []byte(agentDotEnv), 0644); err != nil {
+		t.Fatalf("failed to write agent .env: %v", err)
+	}
+
+	// 3. Write runtime.json with environment variable place-holders
+	runtimeContent := `{
+		"model": "openrouter/anthropic/claude-3.5-sonnet",
+		"apiKey": "${ROOT_ONLY_KEY}",
+		"reasoningEffort": "${OVERRIDDEN_KEY}"
+	}`
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(runtimeContent), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// 4. Test LoadAgentDotEnv
+	loadedMap, err := LoadAgentDotEnv(agentDir)
+	if err != nil {
+		t.Fatalf("LoadAgentDotEnv failed: %v", err)
+	}
+
+	if loadedMap["SHARED_KEY"] != "root_value" {
+		t.Errorf("expected SHARED_KEY=root_value, got %q", loadedMap["SHARED_KEY"])
+	}
+	if loadedMap["OVERRIDDEN_KEY"] != "agent_override_value" {
+		t.Errorf("expected OVERRIDDEN_KEY=agent_override_value, got %q", loadedMap["OVERRIDDEN_KEY"])
+	}
+
+	// 5. Test LoadRuntimeConfig expansion
+	cfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig failed: %v", err)
+	}
+
+	if cfg.APIKey != "root_secret_123" {
+		t.Errorf("expected expanded apiKey 'root_secret_123', got %q", cfg.APIKey)
+	}
+	if cfg.ReasoningEffort != "agent_override_value" {
+		t.Errorf("expected expanded reasoningEffort 'agent_override_value', got %q", cfg.ReasoningEffort)
+	}
+}

@@ -712,16 +712,80 @@ Implemented in `pkg/agent/a2a.go` and `pkg/agent/workspace.go`. Standardizes int
 
 **Why**: Standardizing on A2A metadata enables seamless interoperability with external agent platforms while providing receiving agents with reliable, un-spoofable caller identity and trace context.
 
-## D34: Bundled `wackypub` skill via `go:embed` and `wackypub --skill` CLI flag
+## D34: Bundled `wackypub-a2a` and `wackypub-ws` Skills via `go:embed` and `wackypub skill`
 
-Implemented in `main.go` and `cmd/root.go`. Embeds `skills/wackypub/SKILL.md` directly into the `wackypub` binary using Go's `//go:embed` directive and exposes it via `wackypub --skill` flag and `wackypub skill` subcommand.
+Implemented in `main.go` and `cmd/root.go`. Embeds `skills/wackypub-a2a/SKILL.md` and `skills/wackypub-ws/SKILL.md` directly into the `wackypub` binary using Go's `//go:embed` directive and exposes them via `wackypub skill [a2a|ws]` subcommand and `wackypub --skill [a2a|ws]` persistent flag.
 
 **Mechanics**:
-- `main.go` uses `//go:embed skills/wackypub/SKILL.md` to embed the single source of truth skill file at build time with zero content duplication.
-- `wackypub --skill` (persistent flag) prints the embedded `SKILL.md` text directly to stdout and exits `0`.
-- `wackypub skill` (subcommand) also prints the embedded skill text to stdout for CLI invocation consistency.
+- `main.go` uses `//go:embed skills/wackypub-a2a/SKILL.md` and `//go:embed skills/wackypub-ws/SKILL.md` to embed the skill files at build time.
+- **`wackypub-a2a`**: Covers CLI usage for agent-to-agent (A2A) communications, command self-discovery, flag ordering caveats, and cross-agent execution. Retrieved via `wackypub skill a2a` or `wackypub --skill a2a`.
+- **`wackypub-ws`**: Covers workspace setup, environment secret stashing (`.env`), agent scaffolding, Git versioning management (D35), causal tracing notes (D36), and recommended symlink organization patterns (`runtimes/`, `skillsets/`, `toolsets/`). Retrieved via `wackypub skill ws` or `wackypub --skill ws`.
 
-**Why**: Allows LLMs, external agent platforms, and human operators to instantly inspect or load the `wackypub` skill directly from the CLI binary (`wackypub --skill`), mirroring patterns in tool CLIs (like `qmd --skill`), without requiring external file path resolution or code duplication.
+**Why**: Modularizing workspace setup from inter-agent calling gives agents and human operators focused, context-efficient skill guidance tailored to their specific task (workspace creation vs A2A messaging).
+
+## D35: Per-Agent Git Repositories and Workspace Manifest Coordination
+
+Implemented in `pkg/agent/git.go` and `cmd/workspace.go`. Provides pure-Go per-agent event versioning, A2A revision lineage, workspace snapshots, tagging, and remote pushing via `github.com/go-git/go-git/v5`. This entry reflects the state after review - the first pass had three real problems, all fixed before this was trusted enough to commit; see "Reviewed and fixed" below rather than treating this as having landed clean.
+
+**Per-Agent Isolation (`<ws_dir>/<agent_id>/.git`)**:
+- Each agent directory operates its own isolated git repository, committed to independently of every other agent's repo.
+- **Default `.gitignore`**: Per-agent `.gitignore` excludes everything by default (`*`) except core agent files (`AGENTS.md`, `IDENTITY.md`, `MEMORY.md`, `runtime.json`, `.env`, `session.jsonl`, `scratchpad/`, `skills/`, `tools/`). Workspace root `.gitignore` ignores everything except root metadata files (`.gitignore`, `WACKYPUB_ROOT`, `MANIFEST.md`).
+
+**A2A Spec-Compliant Revision Lineage**:
+- When **Agent A** targets **Agent B**, `ValidateAgentTarget` reads Agent A's HEAD commit SHA and injects `workspace_revision` into `A2AMetadata.Metadata`.
+- Agent B's event commit message embeds Agent A's SHA, forming an un-spoofable cross-agent audit trail.
+
+**Workspace Coordinator Subcommands**:
+- **`wackypub workspace snapshot`**: Scans all agent repos under `<ws_dir>`, writes `<ws_dir>/MANIFEST.md` with each agent's active commit SHA, and commits `MANIFEST.md` in the workspace root repo.
+- **`wackypub workspace tag <name>`**: Tags the workspace root repo with `<name>` and tags each agent repo with `tag-<agent_id>`.
+- **`wackypub workspace push <remote>`**: Reads the named `<remote>` configuration and pushes each agent repo (`<ws_dir>/<agent_id>/.git`) to the remote as a branch matching its `<agent_id>`, along with all workspace and agent tags.
+
+**`runtime.json` gets `${VAR}`/`$VAR` expansion**: `LoadRuntimeConfig` now loads workspace-root and per-agent `.env` files and expands environment variables in `runtime.json` before parsing it - lets a shared, symlinked `runtime.json` template reference a per-agent or per-workspace secret (`"apiKey": "${OPENROUTER_API_KEY}"`) instead of hardcoding one per file. Doesn't change what ends up tracked in git (the `.env` holding the real value is tracked too, see below) - this is about config reuse, not secret hygiene.
+
+**Reviewed and fixed before commit** (caught in review, not shipped as first written):
+1. **Every tool call committed twice.** The first pass called `CommitWorkspaceEvent` before and after every single `run_command` invocation, plus again inside `CreateScratchpad` for auto-captured output - with `--max-tool-turns` defaulting to 300, a single generation could trigger hundreds of full-tree `git add -A` + commit cycles. Fixed by committing once per user turn, once per assistant turn, and once per compaction instead - matches normal turn cadence, not tool-call cadence.
+2. **`workspace push`/`workspace tag` silently "succeeded" on total failure.** Every per-repo push/tag error was discarded (`_ = repo.Push(...)`). Verified live: pointed a remote at a nonexistent host, ran `push`, got a clean "Pushed" message and exit 0 with nothing actually pushed. Fixed - both now collect every per-repo error and return them.
+3. **The workspace-root fallback for agents without their own repo did nothing.** `ResolveGitRepoDir` fell back to the shared workspace-root repo for a named agent lacking its own `.git` - but the root `.gitignore` excludes every agent directory, so that fallback could never actually capture anything about the agent, while reporting no error. Verified live: 5 scratchpad creates against such an agent produced exactly 1 commit containing only root metadata. Fixed - the fallback now only applies to genuinely workspace-level events (no `agentID`), not per-agent ones.
+
+**`runtime.json`/`.env` being tracked is intentional, not a bug - deliberately, not by oversight.** Both hold real secrets (API keys, tokens) and both get committed in plaintext, confirmed live. Kept anyway: model/backend switches are meant to be part of an agent's auditable history, and workspace data as a whole - not just these two files - is meant to be treated as sensitive regardless of what's in it. The standing assumption is that a workspace only ever gets pushed to a private, trusted remote, never a public one. That assumption is a real risk if someone forgets it once, so `workspace push` backs it with an actual gate rather than just a docs warning: it hard-refuses without `--i-understand`, and that flag is deliberately left out of `--help` - the point is to force at least one encounter with the warning text before the flag can be used, not to make it hard to find permanently. `skills/wackypub-ws/SKILL.md` repeats the same warning and adds "notify your user before pushing."
+
+**Revised again, not yet implemented: commit cadence moves from turn-boundary-only to once per `run_command` dispatch.** Turn-boundary-only (item 1 above) is cheap but breaks `wackypub trace` (D36) across an A2A hop: if Agent X calls Agent Y mid-turn, X's HEAD at that instant is still the *start-of-turn* commit ("assistant" hasn't fired yet, generation isn't done) - so `workspace_revision` handed to Y always points at the state before X's turn even started, permanently, since it's baked into Y's own commit at that instant and nothing can retroactively point it at a commit that doesn't exist yet. Tracing back from Y always lands at X's turn boundary, never at what X actually did before deciding to call out.
+
+Considered and rejected: committing X's pending state from inside `ValidateAgentTarget` specifically. Doesn't work - `ValidateAgentTarget` runs inside the *newly spawned child process* (the `wackypub agent Y prompt` subprocess X's `run_command` call launches), not inside X's own still-running parent process. Having that child process commit into X's repo means two separate OS processes mutating the same agent's workspace at once - the one invariant every other part of this system leans on (only one process touches a workspace at a time) would break, quietly, for the first time.
+
+Landed on instead: the calling process itself commits once, synchronously, immediately before it spawns *any* `run_command` subprocess - not just wackypub/A2A ones, every tool call uniformly, no detection logic for "is this an A2A call" needed at all. Built-in in-process tools (`create_scratchpad`, `get_scratchpad`, `list_scratchpads`, `search_scratchpad`, `load_skill`) are deliberately excluded - they never spawn a subprocess, carry no handoff risk, and get captured by whatever surrounding commit already exists.
+
+Honest cost: this is close to the per-tool-call cadence item 1 above just moved away from - up to ~300 commits in a worst-case tool-heavy generation again, not the handful per turn item 1 landed on. Accepted anyway: git tracking is opt-in per agent (a no-op if `.git` was never initialized), each commit is small, and it's the same total bytes changed either way - six parts across three small commits instead of six parts in one, not six parts written six times. The DAG/object-count overhead is real but bounded, not a duplication-of-work problem.
+
+**Why**: solves concurrency lock contention between agents (not "100% lock-free" full stop - the root-repo fallback path for un-migrated agents still shares one repo, which is why item 3 above matters) while providing on-demand swarm history coordination, snapshotting, and single-remote multi-branch sync.
+
+## D36: Causal Swarm Tracing (`wackypub trace`)
+
+Workshopped for implementation in `pkg/agent/git.go` and `cmd/trace.go`. Provides multi-turn, backward causal graph traversal across per-agent git repositories and correlation IDs.
+
+**1. Invocation Syntax**:
+- `wackypub trace [flags] <agent_id> <commit>`: Backward trace from a specific commit ref in `<agent_id>`.
+- `wackypub trace [flags] <trace_id>`: Global trace matching `<trace_id>` across all workspace agent repositories.
+
+**2. Commit Specifier Resolution**:
+- Supports full 40-character SHAs, short SHA prefixes/suffixes, relative refs (`HEAD`, `HEAD~1`), branch names, and git tags (`v1.0.0`, `tag-<agent_id>`).
+
+**3. Intra-Turn & Inter-Agent Traversal**:
+- **Intra-Agent Walking**: Within an agent's repository, `trace` steps backward commit-by-commit through the agent's turn history (showing tool calls, tool responses, and intermediate sub-agent dispatches).
+- **Inter-Agent Boundary Hop**: When `trace` encounters a turn origin (`user` commit) or an outgoing A2A tool call, it reads `metadata.workspace_revision` from the `AGENT2AGENT` payload and hops to the parent agent's git repository.
+- **Termination**: Stops when it reaches $N$ steps (`-n 20`), a root user input, an unresolvable commit, or an external non-local workspace boundary.
+
+**4. Verbosity Levels (`-v / --verbosity 0..4`)**:
+- `0` (Minimal): Event type, `functionCall` names, user prompt text (no assistant text, no `functionResponse`).
+- `1` (Compact — Default): Event type, tool names (plus `command` string for `run_command`), user text, assistant text.
+- `2` (Clean Full): User, assistant, tool call, and tool response text, stripped of reasoning/thinking blocks and signatures.
+- `3` (Full with Thinking): Complete content including thinking/reasoning blocks (stripped of provider signatures).
+- `4` (Raw JSONL): Dumps raw `genai.Content` JSON lines and `AGENT2AGENT` payloads as-is.
+
+**Why**: Gives swarm operators and LLM debuggers standard debugger-like step-by-step causal tracing across multi-agent execution graphs, linking failures, tool calls, and responses back to the originating prompt across isolated git commit histories.
+
+*Note*: `skills/wackypub-ws/SKILL.md` holds a reference section for `wackypub trace` and will be updated with full command usage options upon completion of D36 implementation.
+
 
 
 

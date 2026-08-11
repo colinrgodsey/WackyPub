@@ -6,10 +6,14 @@ import (
 	"github.com/colinrgodsey/WackyPubAI/cmd"
 )
 
-//go:embed skills/wackypub/SKILL.md
-var bundledWackyPubSkill string
+//go:embed skills/wackypub-a2a/SKILL.md
+var bundledA2ASkill string
+
+//go:embed skills/wackypub-ws/SKILL.md
+var bundledWSSkill string
 
 func main() {
-	cmd.BundledSkill = bundledWackyPubSkill
+	cmd.BundledA2ASkill = bundledA2ASkill
+	cmd.BundledWSSkill = bundledWSSkill
 	cmd.Execute()
 }

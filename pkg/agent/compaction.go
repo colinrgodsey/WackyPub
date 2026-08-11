@@ -165,5 +165,9 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, fmt.Errorf("failed to update session.jsonl after compaction: %w", err)
 	}
 
+	wsDir := filepath.Dir(agentDir)
+	agentID := filepath.Base(agentDir)
+	_ = CommitWorkspaceEvent(wsDir, agentID, "compact")
+
 	return true, nil
 }

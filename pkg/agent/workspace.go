@@ -221,11 +221,29 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		traceID = GenerateTraceID()
 	}
 
+	newMetaMap := make(map[string]string)
+	for k, v := range meta.Metadata {
+		newMetaMap[k] = v
+	}
+
+	wsDir, _ := ResolveWorkspaceDir(dir, false)
+	sendingAgentID := callerID
+	if sendingAgentID == "" && looksLikeAgentDir(dir) {
+		sendingAgentID = filepath.Base(dir)
+	}
+
+	sendingRepoDir := ResolveGitRepoDir(wsDir, sendingAgentID)
+	if sendingRepoDir != "" {
+		if headSHA, _ := GetWorkspaceHeadCommit(sendingRepoDir); headSHA != "" {
+			newMetaMap["workspace_revision"] = headSHA
+		}
+	}
+
 	newMeta := &A2AMetadata{
 		CallerID:  callerID,
 		CallChain: newChain,
 		TraceID:   traceID,
-		Metadata:  meta.Metadata,
+		Metadata:  newMetaMap,
 	}
 
 	denseJSON, err := newMeta.Encode()

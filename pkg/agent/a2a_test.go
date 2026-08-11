@@ -120,6 +120,64 @@ func TestValidateAgentTarget_A2AMetadataPropagation(t *testing.T) {
 	}
 }
 
+func TestValidateAgentTarget_MultiHopTraceIDPreservation(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, RootMarkerFile), []byte(""), 0644); err != nil {
+		t.Fatalf("failed to write root marker: %v", err)
+	}
+
+	bobDir := filepath.Join(tmpDir, "bob")
+	jaxDir := filepath.Join(tmpDir, "jax")
+	clerkDir := filepath.Join(tmpDir, "clerk")
+
+	os.MkdirAll(bobDir, 0755)
+	os.MkdirAll(jaxDir, 0755)
+	os.MkdirAll(clerkDir, 0755)
+
+	os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("jax\n"), 0644)
+	os.WriteFile(filepath.Join(jaxDir, AllowedAgentsFile), []byte("clerk\n"), 0644)
+
+	origCwd, _ := os.Getwd()
+	defer os.Chdir(origCwd)
+
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+
+	// Originating call initializes trace_id "a2a-multihop-999"
+	os.Setenv(Agent2AgentEnvVar, `{"caller_id":"bob","call_chain":["bob"],"trace_id":"a2a-multihop-999"}`)
+
+	// Hop 1: Bob calls Jax
+	os.Chdir(bobDir)
+	cleanup1, err := ValidateAgentTarget("jax")
+	if err != nil {
+		t.Fatalf("ValidateAgentTarget jax failed: %v", err)
+	}
+
+	metaHop1, err := ParseA2AMetadata()
+	if err != nil || metaHop1.TraceID != "a2a-multihop-999" {
+		t.Fatalf("Hop 1 failed to preserve trace_id: got %q", metaHop1.TraceID)
+	}
+
+	// Hop 2: Jax calls Clerk
+	os.Chdir(jaxDir)
+	cleanup2, err := ValidateAgentTarget("clerk")
+	if err != nil {
+		t.Fatalf("ValidateAgentTarget clerk failed: %v", err)
+	}
+
+	metaHop2, err := ParseA2AMetadata()
+	if err != nil || metaHop2.TraceID != "a2a-multihop-999" {
+		t.Fatalf("Hop 2 failed to preserve trace_id: got %q", metaHop2.TraceID)
+	}
+
+	if len(metaHop2.CallChain) != 3 || metaHop2.CallChain[0] != "bob" || metaHop2.CallChain[1] != "jax" || metaHop2.CallChain[2] != "clerk" {
+		t.Errorf("unexpected multi-hop call chain: %v", metaHop2.CallChain)
+	}
+
+	cleanup2()
+	cleanup1()
+}
+
 func TestValidateAgentTarget_A2ACycleRejection(t *testing.T) {
 	tmpDir := t.TempDir()
 	agentDir := filepath.Join(tmpDir, "jax")

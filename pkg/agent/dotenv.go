@@ -80,8 +80,54 @@ func parseDotEnvValue(val string) string {
 	return val
 }
 
-// LoadAgentDotEnv loads the .env file for an agent located at <agentDir>/.env.
+// FindWorkspaceRootDir walks up from startDir looking for WACKYPUB_ROOT marker file.
+// If not found, falls back to startDir's parent directory.
+func FindWorkspaceRootDir(startDir string) string {
+	if startDir == "" {
+		return ""
+	}
+	clean := filepath.Clean(startDir)
+	dir := clean
+	for {
+		if pathExists(filepath.Join(dir, RootMarkerFile)) {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	return filepath.Dir(clean)
+}
+
+// LoadAgentDotEnv loads workspace root .env (<ws_dir>/.env) followed by per-agent .env (<agentDir>/.env).
+// Applies loaded key-values into process environment (os.Setenv) and returns the combined map.
 func LoadAgentDotEnv(agentDir string) (map[string]string, error) {
-	dotenvPath := filepath.Join(agentDir, ".env")
-	return ParseDotEnv(dotenvPath)
+	result := make(map[string]string)
+
+	if agentDir != "" {
+		wsDir := FindWorkspaceRootDir(agentDir)
+		if wsDir != "" && wsDir != agentDir {
+			rootEnv, err := ParseDotEnv(filepath.Join(wsDir, ".env"))
+			if err != nil {
+				return nil, err
+			}
+			for k, v := range rootEnv {
+				result[k] = v
+				_ = os.Setenv(k, v)
+			}
+		}
+
+		agentEnv, err := ParseDotEnv(filepath.Join(agentDir, ".env"))
+		if err != nil {
+			return nil, err
+		}
+		for k, v := range agentEnv {
+			result[k] = v
+			_ = os.Setenv(k, v)
+		}
+	}
+
+	return result, nil
 }
