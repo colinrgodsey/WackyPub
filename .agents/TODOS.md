@@ -509,3 +509,26 @@ lands, replace that placeholder section with real usage docs, and make sure
 it's consistent with whatever `-v`/verbosity behavior and commit-hopping
 mechanics actually ship, not just what D36 currently describes on paper.
 
+## `wackypub trace` shows misleading content at a compaction step ("fog of war")
+
+`extractTurnDiff` (`pkg/agent/trace.go`) isolates what's new at a commit by
+comparing `session.jsonl` turn *count* against the parent commit - works
+for the normal append-only case, but a compaction commit makes
+`session.jsonl` *shrink* (old turns archived into `MEMORY.md`, replaced by
+fewer). Verified live: 5 turns/5 commits, then a compaction collapsing
+down to 1 turn - the `compact` step in the trace shows the same content as
+the very next step, not anything representing what compaction actually
+did. No crash, no effect on hop logic or `MaxSteps`/cycle detection, just
+misleading content specifically for `compact` steps.
+
+Left as-is deliberately for now - `trace` is meant to stay a simple tool,
+and this is a real "fog of war" spot, not a bug in the core mechanism. A
+more capable version could reconstruct what actually happened at a
+compaction step properly: the pre-compaction `session.jsonl` is still
+fully recoverable from the parent commit (git doesn't lose it, only the
+*live* file shrinks), and the `compact` commit itself has the new
+`MEMORY.md` addendum - a real diff between those two would show exactly
+which turns got archived and what they were summarized into, not just a
+count-based guess. Worth doing once someone actually needs to trace
+through a compaction, not before.
+

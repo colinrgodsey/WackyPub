@@ -84,9 +84,25 @@ Built-in in-process tools (`create_scratchpad`, `get_scratchpad`, `list_scratchp
 
 ---
 
-## Causal Swarm Tracing (D36) - planned, not yet implemented
+## Causal Swarm Tracing (D36)
 
-`wackypub trace` (step-by-step causal tracing across multi-agent commit graphs, hopping between agent repos via the `workspace_revision` metadata above) is designed in `.agents/DECISIONS.md` D36 but not built yet - there is no `wackypub trace` command in this version. Don't reference it as usable until D36 actually lands.
+Step-by-step causal tracing across multi-agent commit graphs is supported via `wackypub trace`:
+```bash
+# Targeted trace starting from a commit in an agent's repository
+wackypub trace <agent_id> <commit> [-n <steps>] [-v <0..4>]
+
+# Global correlation trace searching across all workspace agent repositories
+wackypub trace <trace_id> [-n <steps>] [-v <0..4>]
+```
+
+### Options & Verbosity Levels
+- `-n, --max-steps <int>`: Maximum trace steps to traverse (default 20).
+- `-v, --verbosity <int>`: Verbosity level 0..4 (default 1):
+  - `0`: Minimal (event types, function call names, user prompt text)
+  - `1`: Compact Default (event type, tool names, user text, assistant text)
+  - `2`: Clean Full (complete text, stripped of thinking blocks & signatures)
+  - `3`: Full with Thinking (includes thinking blocks, stripped of provider signatures)
+  - `4`: Raw JSONL (dumps raw commit messages & `AGENT2AGENT` payloads as-is)
 
 ---
 

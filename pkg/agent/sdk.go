@@ -400,3 +400,14 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 	agentDir := s.AgentDir(agentID)
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
 }
+
+// Trace performs backward causal tracing starting from an agent commit specifier or global trace ID according to D36.
+func (s *AgentSDK) Trace(agentID string, commitSpec string, traceID string, opts TraceOptions) (*TraceResult, error) {
+	if traceID != "" {
+		return TraceByTraceID(s.WorkspaceDir, traceID, opts)
+	}
+	if agentID != "" && commitSpec != "" {
+		return TraceAgentCommit(s.WorkspaceDir, agentID, commitSpec, opts)
+	}
+	return nil, fmt.Errorf("must specify either agentID and commitSpec, or traceID")
+}

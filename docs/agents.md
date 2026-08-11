@@ -476,7 +476,21 @@ wackypub workspace push <remote>
 - **Git Versioning Init (`wackypub workspace init-git [agent_id]`)**: Initializes a pure-Go git repository in an agent directory (`<ws_dir>/<agent_id>/.git`) or workspace root (`<ws_dir>/.git`) via `go-git`. When `.git` is present, every state event creates an isolated commit with embedded `AGENT2AGENT` JSON metadata and `workspace_revision` (D35).
 - **Workspace Snapshot (`wackypub workspace snapshot`)**: Scans all workspace agent repositories, records each agent's active HEAD commit SHA in `<ws_dir>/MANIFEST.md`, and commits `MANIFEST.md` in the workspace root repository.
 - **Workspace Tagging (`wackypub workspace tag <name>`)**: Tags the workspace root repository with `<name>` and tags each per-agent repository with `tag-<agent_id>`.
-- **Remote Push (`wackypub workspace push <remote>`)**: Pushes each agent repository to `<remote>` under a remote branch matching its `agent_id`, and pushes all workspace and agent tags.
+- **Remote Push (`wackypub workspace push <remote>`)**: Pushes each agent repository to `<remote>` under a remote branch matching its `agent_id`, and pushes all workspace and agent tags. Requires `--i-understand` flag confirmation to guard against accidental API key exfiltration.
+
+### Causal Swarm Tracing (`trace`)
+```bash
+wackypub trace <agent_id> <commit> [-n <steps>] [-v <0..4>]
+wackypub trace <trace_id> [-n <steps>] [-v <0..4>]
+```
+- **Targeted Trace**: Step-by-step backward causal traversal starting from `<commit>` in `<agent_id>`'s repository. Traverses backward through turn commits and follows `metadata.workspace_revision` out to calling agent repositories across inter-agent boundaries (D36).
+- **Global Correlation Trace**: Searches across all workspace agent repositories for commits matching `<trace_id>` and reconstructs the causal execution chain.
+- **Verbosity Levels (`-v 0..4`)**:
+  - `0`: Minimal (event types, function call names, user prompt text)
+  - `1`: Compact Default (event type, tool names, user text, assistant text)
+  - `2`: Clean Full (complete text, stripped of thinking blocks & signatures)
+  - `3`: Full with Thinking (includes thinking blocks, stripped of provider signatures)
+  - `4`: Raw JSONL (dumps raw commit messages & `AGENT2AGENT` payloads as-is)
 
 ---
 

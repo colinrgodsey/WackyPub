@@ -10,6 +10,8 @@ import (
 	"google.golang.org/genai"
 )
 
+const SessionFileName = "session.jsonl"
+
 // ReadSessionTurns reads all turns from <agent_dir>/session.jsonl as genai.Content objects.
 // If the file does not exist, returns an empty list without error.
 func ReadSessionTurns(agentDir string) ([]*genai.Content, error) {
