@@ -761,7 +761,7 @@ Honest cost: this is close to the per-tool-call cadence item 1 above just moved 
 
 ## D36: Causal Swarm Tracing (`wackypub trace`)
 
-Workshopped for implementation in `pkg/agent/git.go` and `cmd/trace.go`. Provides multi-turn, backward causal graph traversal across per-agent git repositories and correlation IDs.
+Implemented in `pkg/agent/trace.go` and `cmd/trace.go`. Provides multi-turn, backward causal graph traversal across per-agent git repositories and correlation IDs. First pass rendered only the bare git commit message (no real turn content, at any verbosity level) - caught in review, fixed by diffing `session.jsonl` against the parent commit to isolate what each commit actually added, verified live. One known gap logged as a TODO rather than blocking: a compaction commit shrinks `session.jsonl` instead of growing it, so the count-based diff shows misleading content specifically at `compact` steps - narrow, doesn't affect hop logic or the normal turn-by-turn case.
 
 **1. Invocation Syntax**:
 - `wackypub trace [flags] <agent_id> <commit>`: Backward trace from a specific commit ref in `<agent_id>`.
@@ -785,6 +785,64 @@ Workshopped for implementation in `pkg/agent/git.go` and `cmd/trace.go`. Provide
 **Why**: Gives swarm operators and LLM debuggers standard debugger-like step-by-step causal tracing across multi-agent execution graphs, linking failures, tool calls, and responses back to the originating prompt across isolated git commit histories.
 
 *Note*: `skills/wackypub-ws/SKILL.md` holds a reference section for `wackypub trace` and will be updated with full command usage options upon completion of D36 implementation.
+
+## D37: `json_escape` attribute for `<SCRATCHPAD_DATA />` macros
+
+Implemented in `pkg/agent/scratchpad.go`. Verified live against the exact motivating scenario (a JSON template with a macro nested in a string value, escaped-quote attribute syntax and all) - expands to valid JSON, content round-trips byte-for-byte through encode/decode. `id`/`skip_lines`/`num_lines`'s regexes also needed loosening to tolerate escaped quotes (`\"` as well as `"`) around their own attribute values, not just `json_escape`'s - a real, necessary consequence of the macro syntax itself now needing to survive being embedded inside a JSON string, not scope creep. Surfaced by a real live snag: an agent using an MCP-wrapped Notion tool (via `mcporter`) needed to inject a large chapter's text into a `create-pages` call whose `content` field sits nested inside a JSON request body. Raw macro substitution (the only mode that exists today) works fine when the target slot is a plain string flag/stdin (`create-attachment --content "<SCRATCHPAD_DATA id=... />"` worked cleanly) but breaks when the payload lands inside a JSON string value - unescaped quotes, newlines, and control characters produce invalid JSON. The agent's only working fallback was reading the chapter into its own context and re-emitting it as an escaped JSON string by hand, which is exactly the token cost and truncation/escaping risk the macro system exists to avoid.
+
+**Considered and rejected**: having the runner auto-detect when a macro occurrence sits inside a JSON string value and escape it automatically. Rejected as fragile and disproportionate - it would mean parsing the surrounding text as JSON while it still has a template hole in it, a much harder and less predictable problem than anything else in the macro system, which is otherwise a plain regex substitution with no context-sensitivity at all.
+
+**Landed on instead**: an explicit `json_escape="true"` attribute on `<SCRATCHPAD_DATA />`, alongside the existing `skip_lines`/`num_lines`. When set, the referenced scratchpad content is substituted as JSON-escaped text (backslashes, quotes, newlines, control characters, per RFC 8259) instead of raw bytes. Implementation note: `encoding/json.Marshal` on a Go string already produces correct, spec-compliant escaping including outer quotes - the simplest correct approach is to marshal and then trim exactly one leading and one trailing `"` from the result, rather than hand-rolling escaping rules.
+
+**Deliberately does not wrap the result in quotes.** The macro expands to just the escaped inner text; the caller's own template supplies the surrounding quotes (`"content": "<SCRATCHPAD_DATA id=\"chapter1\" json_escape=\"true\" />"`). Keeps this composable the same way raw injection already is - the macro doesn't know or assume anything about where it's being dropped in. This needs to be stated explicitly wherever `json_escape` is documented (tool description text, `--help`, any skill mentioning it), since it's the one behavior an agent can't infer from the attribute name alone.
+
+**Doesn't by itself solve payload size for very large documents** - that's a separate, already-solved concern: `args` entries are capped at `MaxExpandedArgBytes` (500,000 bytes) after expansion, but `stdin` expansion has no size cap at all (confirmed in `executeTool`, `pkg/agent/agent_folder.go`). A large `json_escape`'d payload should go through `stdin` (assembling a full request body in a scratchpad entry via macro composition, then `stdin: <SCRATCHPAD_DATA id="assembled" json_escape="true" />`), not `args`. Whether that's viable for a specific external tool depends on whether that tool's own CLI accepts a full body on stdin - not something wackypub controls.
+
+**Explicitly deferred, not part of this decision**: a `<SCRATCHPAD_FILE id="X" />` out-of-band file-handle token, per-tool "injectable/large parameter" capability metadata, and server-side chunked injection for streaming into an existing document. All were proposed alongside `json_escape` for the same live problem; none are needed unless `json_escape` + `stdin` turns out insufficient for some case not yet seen - matches this project's standing preference for composing existing primitives over adding new ones ahead of demonstrated need (D29, the rejected `files-rw search` command).
+
+**Why**: closes a real gap found live, not hypothetical - the existing macro system had exactly one substitution mode (raw bytes into any slot), which is correct for the common case and silently wrong the moment the slot is JSON-structured. `json_escape` extends the existing mechanism with one more escaping mode rather than replacing it or adding a parallel injection system.
+
+## D38: `sessionCompactPct` moves out of `runtime.json`; per-agent `COMPACT.md` for custom compaction
+
+Implemented in `pkg/agent/compaction.go` and `pkg/agent/runtime.go`. One real bug caught in review: the implementation's edit to `compaction_test.go` left `TestCompactionEndsOnModelTurn` with an empty `if remaining[0].Role != "user" { }` block (assertion body deleted, empty shell left behind - syntactically valid, so nothing caught it) while also deleting a separate, still-correct turn-count assertion that didn't need to change (the default compaction percentage is unchanged at 50%, just sourced from a different place). Both restored and verified passing. Real, permanent test coverage for the new behavior (`TestLoadCompactConfig_Defaults`, `TestLoadCompactConfig_CustomFrontmatterAndBody`, `TestCompactionWithCustomCompactMD`) was initially missing and added after review - all three verified: custom prompt body actually reaches the model and the default doesn't leak through, `append-only: false` genuinely replaces `MEMORY.md`, `compact-pct` overrides are honored.
+
+**`sessionCompactPct` leaves `RuntimeConfig` entirely.** It was never a model/provider/backend-connection setting - it's a compaction-process knob, and `runtime.json` is specifically model backend config (endpoint, model, apiKey, contextWindow). Default compaction percentage becomes a fixed internal constant (50%, same value `RuntimeConfig`'s own default already was) when nothing overrides it. Existing `runtime.json` files that still set `sessionCompactPct` aren't migrated - the field is just gone from the struct, and Go's JSON unmarshal silently drops unrecognized fields, same non-migration already used for `scratchpad.json` post-D30.
+
+**New: `<agentDir>/COMPACT.md`, optional, per-agent only** (not a workspace-root fallback like `.env`'s - deliberately simpler, one location, no dual-lookup merge logic). Same shape as `SKILL.md`: YAML frontmatter for parameters, Markdown body for the actual payload.
+
+```yaml
+---
+append-only: true   # default true
+compact-pct: 50      # default 50
+---
+<compaction directive prompt - replaces CompactionDirectivePrompt entirely if this file exists>
+```
+
+- **`append-only`** (bool, default `true`): `true` keeps current behavior - the addendum is appended to `MEMORY.md`. `false` replaces `MEMORY.md` wholesale with the addendum instead.
+- **`compact-pct`** (default 50): replaces `sessionCompactPct` - how much of the session gets included in a compaction run and stripped out after. Same validation as today (invalid/out-of-range falls back to 50).
+- **Body, if the file exists, fully replaces `CompactionDirectivePrompt`** - not supplemented, not merged, a straight swap of which text becomes the "Compaction Directive" user turn in `CheckAndCompactSession`'s request. Everything else about how that request gets built (system prompt + `<PERSISTENT_MEMORY>` first turn, turn-merging, etc.) is unchanged regardless of which prompt is in use.
+- **No format enforced on custom bodies.** The default prompt's output is a bullet list meant to be appended; a custom body in `append-only: false` mode is presumably producing something meant to stand alone as a full `MEMORY.md`. Wackypub doesn't validate or reshape either - whoever writes a custom `COMPACT.md` body is responsible for producing output that matches the `append-only` mode they picked.
+- **When `COMPACT.md` doesn't exist**: identical behavior to today, just sourced from fixed defaults instead of `runtime.json` - `compact-pct` 50, `append-only` true, built-in `CompactionDirectivePrompt`.
+
+**`use-memory-md` explicitly dropped, not deferred with a flag.** Discussed alongside `append-only`/`compact-pct` as a way to redirect compaction output somewhere other than `MEMORY.md` entirely, but cut once it became clear it wasn't fully thought through yet and, more importantly, wouldn't currently do anything real: `CheckAndCompactSession` calls `llmModel.GenerateContent` directly, not through the runner/tool pipeline (see the existing "compaction bypasses the runner pipeline" TODO) - there's no tool-calling available during compaction, so "the compaction instructions do something else instead" has nowhere to actually execute. Revisit if a real use case shows up, likely bundled with actually fixing that pipeline gap rather than before it.
+
+**Why**: `sessionCompactPct` living in `runtime.json` was a category error from the start - a process-tuning knob sitting next to backend connection details. `COMPACT.md` gives per-agent control over both the mechanical parameters and, if needed, the entire compaction prompt, using a shape (`SKILL.md`-style frontmatter + body) the codebase and its documentation already teach rather than inventing a new config convention.
+
+**Scope includes cleanup, not just new code**: `examples/runtimes/openrouter-haiku.json`, `anthropic-sonnet.json`, `openrouter-auto.json`, `gemini-flash.json`, and `llamacpp.json` all currently set `sessionCompactPct` and need it removed as part of this change, not left as dead fields in the shipped examples. Also add a new example `COMPACT.md` (`examples/` alongside `examples/runtimes/`, exact location TBD) showing the frontmatter shape and a minimal custom body, so the feature has a working reference the same way `examples/runtimes/` already does for backend config.
+
+## D39: Line counts on auto-captured scratchpad output and `list_scratchpads`
+
+Implemented in `pkg/agent/scratchpad.go` and `pkg/agent/agent_folder.go`. Verified live: filename format, `CountLines` (matches `TailFile`'s split-on-`\n`-drop-trailing-empty convention, table-tested), auto-capture tags, and `list_scratchpads` output all correct, `list_scratchpads` still doing zero content reads as intended.
+
+**Auto-capture (`<STDOUT>`/`<STDERR>` tags from `run_command`, `agent_folder.go`)**: add `lines="N"` alongside the existing `size="N"` attribute - `<SCRATCHPAD_DATA id="X" size="1234" lines="42" />`. Free to add: `CreateScratchpad` already has the full text in memory at the moment it writes the entry, so counting lines costs nothing extra there.
+
+**`list_scratchpads`**: also gets line counts, but *not* by reading every entry's content on every list call, which would partially reintroduce the exact problem D30 eliminated (`ListScratchpads` today is `ReadDir` + `os.Stat` per entry only, zero content reads). Since entries are write-once and never mutated after creation (same invariant D30's whole no-locking design already leans on), the line count is fixed the instant an entry is created - same as `createdBy` already is. So it gets encoded in the filename the same way: `<id>-<lines>-<createdBy>.txt` instead of today's `<id>-<createdBy>.txt`. `list_scratchpads` stays a pure filename-parse operation with no content reads, just one more field to parse out of a name it's already parsing.
+
+**Landed less "clean break" than originally decided, kept anyway.** The plan was for old-format `<id>-<createdBy>.txt` files (D30) to become invisible to the new parser rather than specially handled. What actually shipped (`parseFilenameParts`, `pkg/agent/scratchpad.go`) branches on segment count and recovers `id`/`createdBy` from old-format files too - `lines: 0` for those, not full invisibility - with a dedicated test (`TestListScratchpads_OldFormatRobustness`) locking that in. Reviewed and kept as-is rather than sent back: it's not dangerous (never misparses `createdBy` as a line count, never crashes on the old shape) and arguably more graceful than the original plan, just not what "clean break" specified. Noting the deviation here rather than silently treating the original wording as still accurate.
+
+**Line-counting convention**: match `TailFile`'s existing logic (`pkg/filesrw/ops.go`, D29) exactly rather than inventing a second one - split on `\n`, drop a trailing empty segment so a file ending in a newline doesn't get counted as having one extra (empty) line.
+
+**Why**: line count is something an agent deciding how to paginate a large auto-captured entry (`get_scratchpad`'s `skip_lines`/`num_lines`) needs before it can plan a sensible read, and `list_scratchpads` giving byte size without line count forces a guess. Doing it via filename encoding rather than a content read keeps `list_scratchpads` exactly as cheap as D30 made it, rather than trading away that property for a UI convenience.
 
 
 

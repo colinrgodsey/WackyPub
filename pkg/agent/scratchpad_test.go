@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -163,9 +164,9 @@ func TestExecuteTool_LargeOutputRedirectionWithSize(t *testing.T) {
 		t.Fatalf("executeTool failed: %v", err)
 	}
 
-	// Output must contain <SCRATCHPAD_DATA id="..." size="5001" /> (5000 'A's + newline)
-	if !strings.Contains(output, "<SCRATCHPAD_DATA id=") || !strings.Contains(output, "size=\"5001\"") {
-		t.Fatalf("expected auto-captured tag with size attribute, got: %s", output)
+	// Output must contain <SCRATCHPAD_DATA id="..." size="5001" lines="1" /> (5000 'A's + newline)
+	if !strings.Contains(output, "<SCRATCHPAD_DATA id=") || !strings.Contains(output, "size=\"5001\"") || !strings.Contains(output, "lines=\"1\"") {
+		t.Fatalf("expected auto-captured tag with size and lines attributes, got: %s", output)
 	}
 }
 
@@ -294,5 +295,124 @@ func TestCreateScratchpad_MacroCombination(t *testing.T) {
 	expectedText := "Header:\nPart 1 Data\nPart 2 Data\nFooter"
 	if combinedEntry.Text != expectedText {
 		t.Errorf("got combined text %q, expected %q", combinedEntry.Text, expectedText)
+	}
+}
+
+func TestExpandScratchpadMacros_JsonEscape(t *testing.T) {
+	agentDir := t.TempDir()
+
+	rawText := "Line 1: \"hello\"\nLine 2: backslash \\ and tab\t"
+	entry, err := CreateScratchpad(agentDir, rawText, "test_json")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	// Template JSON body expecting inner string escaping without outer quotes
+	jsonTemplate := fmt.Sprintf(`{"title": "Chapter", "content": "<SCRATCHPAD_DATA id=%q json_escape=\"true\" />"}`, entry.ID)
+
+	expanded, err := ExpandScratchpadMacros(agentDir, jsonTemplate)
+	if err != nil {
+		t.Fatalf("ExpandScratchpadMacros failed: %v", err)
+	}
+
+	// Verify the result is valid JSON
+	var parsed struct {
+		Title   string `json:"title"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(expanded), &parsed); err != nil {
+		t.Fatalf("expanded text is not valid JSON (%v):\n%s", err, expanded)
+	}
+
+	if parsed.Title != "Chapter" {
+		t.Errorf("expected Title 'Chapter', got %q", parsed.Title)
+	}
+	if parsed.Content != rawText {
+		t.Errorf("expected Content %q, got %q", rawText, parsed.Content)
+	}
+}
+
+func TestCountLines(t *testing.T) {
+	tests := []struct {
+		text     string
+		expected int
+	}{
+		{"", 0},
+		{"single line", 1},
+		{"single line with newline\n", 1},
+		{"line 1\nline 2", 2},
+		{"line 1\nline 2\n", 2},
+		{"line 1\nline 2\nline 3\n", 3},
+	}
+
+	for _, tt := range tests {
+		got := CountLines(tt.text)
+		if got != tt.expected {
+			t.Errorf("CountLines(%q) = %d; want %d", tt.text, got, tt.expected)
+		}
+	}
+}
+
+func TestCreateScratchpad_LinesEncoding(t *testing.T) {
+	agentDir := t.TempDir()
+
+	text := "Line 1\nLine 2\nLine 3\n"
+	entry, err := CreateScratchpad(agentDir, text, "test_lines")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	if entry.Lines != 3 {
+		t.Errorf("expected entry.Lines == 3, got %d", entry.Lines)
+	}
+
+	items, _, _, err := ListScratchpads(agentDir)
+	if err != nil {
+		t.Fatalf("ListScratchpads failed: %v", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+
+	if items[0].Lines != 3 {
+		t.Errorf("expected item.Lines == 3, got %d", items[0].Lines)
+	}
+	if items[0].CreatedBy != "test_lines" {
+		t.Errorf("expected CreatedBy 'test_lines', got %q", items[0].CreatedBy)
+	}
+}
+
+func TestListScratchpads_OldFormatRobustness(t *testing.T) {
+	agentDir := t.TempDir()
+
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	if err := os.MkdirAll(spDir, 0755); err != nil {
+		t.Fatalf("failed to create scratchpad directory: %v", err)
+	}
+
+	// Write an old D30 format file <id>-<createdBy>.txt (without lines field)
+	oldPath := filepath.Join(spDir, "abcd-old_author.txt")
+	if err := os.WriteFile(oldPath, []byte("old content"), 0644); err != nil {
+		t.Fatalf("failed to write old-format scratchpad file: %v", err)
+	}
+
+	items, count, _, err := ListScratchpads(agentDir)
+	if err != nil {
+		t.Fatalf("ListScratchpads failed on old format: %v", err)
+	}
+
+	if count != 1 || len(items) != 1 {
+		t.Fatalf("expected 1 item, got count=%d len=%d", count, len(items))
+	}
+
+	if items[0].ID != "abcd" {
+		t.Errorf("expected ID 'abcd', got %q", items[0].ID)
+	}
+	if items[0].Lines != 0 {
+		t.Errorf("expected old-format lines to be 0, got %d", items[0].Lines)
+	}
+	if items[0].CreatedBy != "old_author" {
+		t.Errorf("expected CreatedBy 'old_author', got %q", items[0].CreatedBy)
 	}
 }

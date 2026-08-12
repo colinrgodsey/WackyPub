@@ -7,9 +7,80 @@ import (
 	"path/filepath"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
+
+const DefaultCompactionPct = 50.0
+
+type CompactFrontmatter struct {
+	AppendOnly *bool    `yaml:"append-only"`
+	CompactPct *float64 `yaml:"compact-pct"`
+}
+
+type CompactConfig struct {
+	AppendOnly bool
+	CompactPct float64
+	Prompt     string
+}
+
+// LoadCompactConfig loads per-agent COMPACT.md from <agentDir>/COMPACT.md if present according to D38.
+// Falls back to fixed defaults (AppendOnly=true, CompactPct=50.0, CompactionDirectivePrompt) if absent.
+func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
+	cfg := &CompactConfig{
+		AppendOnly: true,
+		CompactPct: DefaultCompactionPct,
+		Prompt:     CompactionDirectivePrompt,
+	}
+
+	if agentDir == "" {
+		return cfg, nil
+	}
+
+	compactPath := filepath.Join(agentDir, "COMPACT.md")
+	data, err := os.ReadFile(compactPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return cfg, nil
+		}
+		return nil, fmt.Errorf("failed to read COMPACT.md at %s: %w", compactPath, err)
+	}
+
+	content := string(data)
+	body := strings.TrimSpace(content)
+
+	var fm CompactFrontmatter
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "---") {
+		parts := strings.SplitN(trimmed[3:], "---", 2)
+		if len(parts) == 2 {
+			yamlText := parts[0]
+			body = strings.TrimSpace(parts[1])
+			if err := yaml.Unmarshal([]byte(yamlText), &fm); err != nil {
+				return nil, fmt.Errorf("failed to parse YAML frontmatter in %s: %w", compactPath, err)
+			}
+		}
+	}
+
+	if fm.AppendOnly != nil {
+		cfg.AppendOnly = *fm.AppendOnly
+	}
+
+	if fm.CompactPct != nil {
+		pct := *fm.CompactPct
+		if pct > 0 && pct <= 100 {
+			cfg.CompactPct = pct
+		}
+	}
+
+	if body != "" {
+		cfg.Prompt = body
+	}
+
+	return cfg, nil
+}
 
 const CompactionDirectivePrompt = `You are a state compaction engine updating a persistent execution log for this session.
 
@@ -63,7 +134,7 @@ func FormatPersistentMemoryTurn(memoryContent string) string {
 }
 
 // CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
-// preserving the exact session prefix to optimize prompt caching.
+// preserving the exact session prefix to optimize prompt caching according to D38.
 func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, systemPrompt string, llmModel model.LLM) (bool, error) {
 	if runtimeCfg.ContextWindow <= 0 {
 		return false, nil
@@ -83,10 +154,15 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, nil
 	}
 
-	// Calculate turns to compact based on sessionCompactPct
-	pct := runtimeCfg.SessionCompactPct
+	compactCfg, err := LoadCompactConfig(agentDir)
+	if err != nil {
+		return false, err
+	}
+
+	// Calculate turns to compact based on compactCfg.CompactPct (D38)
+	pct := compactCfg.CompactPct
 	if pct <= 0 || pct > 100 {
-		pct = 50.0
+		pct = DefaultCompactionPct
 	}
 
 	numToCompact := int(float64(len(turns)) * (pct / 100.0))
@@ -125,8 +201,8 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	// 2. First X% of session.jsonl turns (already genai.Content)
 	contents = append(contents, compactTurns...)
 
-	// 3. User Turn with Compaction Directive
-	contents = append(contents, genai.NewContentFromText(CompactionDirectivePrompt, "user"))
+	// 3. User Turn with Compaction Directive Prompt (from COMPACT.md or default)
+	contents = append(contents, genai.NewContentFromText(compactCfg.Prompt, "user"))
 
 	// Collapse consecutive user turns before sending — same rationale as
 	// GenerateTurn (see MergeConsecutiveUserTurns doc comment).
@@ -149,9 +225,14 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 
 	addendum = strings.TrimSpace(addendum)
 	if addendum != "" {
-		newMemory := strings.TrimSpace(existingMemory)
-		if newMemory != "" {
-			newMemory = newMemory + "\n\n" + addendum
+		var newMemory string
+		if compactCfg.AppendOnly {
+			existingTrimmed := strings.TrimSpace(existingMemory)
+			if existingTrimmed != "" {
+				newMemory = existingTrimmed + "\n\n" + addendum
+			} else {
+				newMemory = addendum
+			}
 		} else {
 			newMemory = addendum
 		}

@@ -2,6 +2,5 @@
   "endpoint": "http://localhost:11434/v1",
   "model": "llama3",
   "apiKey": "",
-  "sessionCompactPct": 50.0,
   "contextWindow": 8192
 }

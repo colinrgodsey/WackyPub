@@ -41,7 +41,7 @@ cp ../agents/container/SUB.md sub1/AGENTS.md
 cp ../agents/container/SUB.md sub2/AGENTS.md
 
 mkdir main/skills
-cp -r ../skills/wackypub main/skills/
+cp -r ../skills/wackypub-a2a main/skills/
 
 mkdir main/tools
 ln -sf /usr/bin/bash main/tools/bash

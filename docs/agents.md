@@ -101,7 +101,6 @@ Specifies the LLM provider configuration and session compaction parameters for t
 | `geminiThinkingLevel` | `string` | Gemini reasoning level (`"low"`, `"medium"`, `"high"`, `"minimal"`). |
 | `geminiIncludeThoughts` | `bool` | Whether thoughts are included in output parts for native Gemini models (default: `true`). |
 | `reasoningEffort` | `string` | OpenAI / OpenRouter reasoning effort (`"low"`, `"medium"`, `"high"`). |
-| `sessionCompactPct` | `float64` | Percentage of session turns to consume/compact during compaction (default: `50.0`). |
 | `contextWindow` | `int` | Optional maximum token threshold triggering auto-compaction. `0` disables auto-compaction. |
 | `timeoutSeconds` | `int` | HTTP client timeout in seconds for API calls to the LLM backend (default: `900` seconds / 15 minutes). |
 | `preserveThinking` | `bool` | Set for backends that resend and bill for prior reasoning text on every turn (e.g. Kimi K2 Thinking, DeepSeek V4 thinking mode). When true, the compaction token estimate counts `Thought`-marked part text, since it's actually replayed to the model on every subsequent request. Leave `false` for backends that drop/ignore replayed reasoning by default (e.g. Qwen3). See [§7](#7-reasoning--thinking-support). |
@@ -207,10 +206,10 @@ You are Ignis, an ancient wizard.
 #### Built-in Tools & I/O Integration:
 - **`create_scratchpad(text: string)`**: Stores `text` under a freshly generated 4-character ID (`[0-9a-z]`), returning `{id, size}`. Automatically evicts the entry with the oldest file mtime when live entries exceed cap (300). Atomic and collision-safe across separate OS processes via `O_CREATE|O_EXCL`.
 - **`get_scratchpad(id: string, skip_lines?: int, num_lines?: int)`**: Retrieves stored text by ID, optionally paginated by line range.
-- **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (id, size, created_by) ordered by file mtime ascending, and reports current capacity usage.
+- **`list_scratchpads()`**: Lists metadata for all currently-live scratchpad entries (id, size, lines, created_by) ordered by file mtime ascending, and reports current capacity usage (D39).
 - **`search_scratchpad(id: string, query: string, case_sensitive?: bool, regex?: bool, max_results?: int)`**: Searches a specific scratchpad entry by ID for matching lines (see DECISIONS.md D25). Returns 1-indexed line numbers, precomputed `skip_lines` for `get_scratchpad` pagination, and truncated line text (~200 chars), with total match counts reported separately.
-- **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" />` server-side before process execution. Arguments exceeding 500,000 bytes after expansion fail fast.
-- **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" /></STDOUT>`.
+- **Inline Macro Expansion**: Positional arguments and `stdin` template string in `run_command` expand `<SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" />` server-side before process execution. When `json_escape="true"` is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes (D37). Arguments exceeding 500,000 bytes after expansion fail fast.
+- **Automatic Output Redirection**: Subprocess stdout/stderr exceeding 4,000 bytes are automatically captured into fresh scratchpad entries, returning structured tags like `<STDOUT><SCRATCHPAD_DATA id="k3p1" size="5001" lines="42" /></STDOUT>` (D39).
 
 ---
 

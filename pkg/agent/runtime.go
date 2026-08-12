@@ -17,11 +17,10 @@ type RuntimeConfig struct {
 	// "gemini" (default when Endpoint is empty), or "anthropic".
 	Provider string `json:"provider,omitempty"`
 
-	Endpoint          string  `json:"endpoint"`
-	Model             string  `json:"model"`
-	APIKey            string  `json:"apiKey"`
-	SessionCompactPct float64 `json:"sessionCompactPct"`
-	ContextWindow     int     `json:"contextWindow"`
+	Endpoint      string `json:"endpoint"`
+	Model         string `json:"model"`
+	APIKey        string `json:"apiKey"`
+	ContextWindow int    `json:"contextWindow"`
 
 	// TimeoutSeconds sets the HTTP client timeout in seconds for API calls to the LLM backend.
 	// Defaults to DefaultHTTPTimeoutSeconds (900s / 15 minutes) when unset or <= 0.
@@ -92,11 +91,6 @@ func LoadRuntimeConfig(agentDir string) (*RuntimeConfig, error) {
 	var cfg RuntimeConfig
 	if err := json.Unmarshal([]byte(expandedData), &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse runtime.json at %s: %w", runtimePath, err)
-	}
-
-	// Set defaults if empty
-	if cfg.SessionCompactPct <= 0 {
-		cfg.SessionCompactPct = 50.0
 	}
 
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))

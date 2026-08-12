@@ -99,7 +99,7 @@ var agentGenerateCmd = &cobra.Command{
 	Use:   "generate [agent_id]",
 	Short: "Generate the agent's turn from current session using input previously queued with 'add'.",
 	Long: `Loads the agent from <ws_dir>/<agent_id>, evaluates whether session compaction is needed
-(based on runtime.json's contextWindow/sessionCompactPct - see docs/agents.md), then calls the
+(based on runtime.json's contextWindow and COMPACT.md configuration - see docs/agents.md), then calls the
 configured model with the system prompt, MEMORY.md, and current session.jsonl history, and
 appends the resulting turn (including any reasoning/thinking part) to session.jsonl.
 
@@ -325,7 +325,7 @@ var agentCompactCmd = &cobra.Command{
 	Short: "Manually evaluate and, if needed, perform session compaction",
 	Long: `Evaluates whether the agent's session exceeds the contextWindow token threshold configured
 in runtime.json and, if so, performs the same compaction that "generate"/"prompt" would trigger
-automatically: summarizes the oldest sessionCompactPct of turns into MEMORY.md and removes them
+automatically: summarizes the oldest turns (default 50%, or compact-pct in COMPACT.md) into MEMORY.md and removes them
 from session.jsonl. If the session is under the threshold, or contextWindow is 0/unset, this is
 a no-op - it never errors just because compaction wasn't needed.
 

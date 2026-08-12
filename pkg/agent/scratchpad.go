@@ -2,6 +2,7 @@ package agent
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -23,6 +24,7 @@ const (
 type ScratchpadEntry struct {
 	ID        string `json:"id"`
 	Size      int    `json:"size"`
+	Lines     int    `json:"lines"`
 	CreatedBy string `json:"created_by"`
 	Text      string `json:"text"`
 }
@@ -30,15 +32,22 @@ type ScratchpadEntry struct {
 type ScratchpadItem struct {
 	ID        string `json:"id"`
 	Size      int    `json:"size"`
+	Lines     int    `json:"lines"`
 	CreatedBy string `json:"created_by"`
 }
 
-var (
-	scratchpadMacroRegex = regexp.MustCompile(`<SCRATCHPAD_DATA\s+([^>]+)\s*/?>`)
-	macroIDRegex         = regexp.MustCompile(`id="([^"]+)"`)
-	macroSkipLinesRegex  = regexp.MustCompile(`skip_lines="(\d+)"`)
-	macroNumLinesRegex   = regexp.MustCompile(`num_lines="(\d+)"`)
-)
+// CountLines counts the number of lines in text according to D39.
+// Matches TailFile's convention: splits on \n, drops trailing empty segment if text ends in \n.
+func CountLines(text string) int {
+	if text == "" {
+		return 0
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return len(lines)
+}
 
 func generateRandomID() string {
 	const charset = "0123456789abcdefghijklmnopqrstuvwxyz"
@@ -64,13 +73,24 @@ func findScratchpadFile(agentDir string, id string) (string, string, error) {
 	return matches[0], filepath.Base(matches[0]), nil
 }
 
-func parseCreatedByFromFilename(baseName string) string {
+func parseFilenameParts(baseName string) (id string, lines int, createdBy string) {
 	baseNoExt := strings.TrimSuffix(baseName, ".txt")
-	parts := strings.SplitN(baseNoExt, "-", 2)
-	if len(parts) > 1 {
-		return parts[1]
+	parts := strings.SplitN(baseNoExt, "-", 3)
+	if len(parts) == 3 {
+		id = parts[0]
+		n, err := strconv.Atoi(parts[1])
+		if err == nil {
+			lines = n
+		}
+		createdBy = parts[2]
+		return id, lines, createdBy
 	}
-	return ""
+	if len(parts) == 2 {
+		id = parts[0]
+		createdBy = parts[1]
+		return id, 0, createdBy
+	}
+	return baseNoExt, 0, ""
 }
 
 func EvictOldestScratchpad(spDir string, maxCap int) {
@@ -112,8 +132,8 @@ func EvictOldestScratchpad(spDir string, maxCap int) {
 	}
 }
 
-// CreateScratchpad creates a new scratchpad entry in <agentDir>/scratchpad/<id>-<createdBy>.txt
-// according to D30.
+// CreateScratchpad creates a new scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
+// according to D30/D39.
 // Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
 // Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
 // Automatically evicts the entry with the oldest mtime when live entries exceed cap (300).
@@ -132,13 +152,14 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 		return nil, fmt.Errorf("failed to create scratchpad directory: %w", err)
 	}
 
+	lineCount := CountLines(expandedText)
 	var id string
 	var filePath string
 	var file *os.File
 
 	for i := 0; i < 100; i++ {
 		candidateID := generateRandomID()
-		candidatePath := filepath.Join(spDir, fmt.Sprintf("%s-%s.txt", candidateID, createdBy))
+		candidatePath := filepath.Join(spDir, fmt.Sprintf("%s-%d-%s.txt", candidateID, lineCount, createdBy))
 		f, err := os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err == nil {
 			id = candidateID
@@ -166,6 +187,7 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 	return &ScratchpadEntry{
 		ID:        id,
 		Size:      len(expandedText),
+		Lines:     lineCount,
 		CreatedBy: createdBy,
 		Text:      expandedText,
 	}, nil
@@ -234,13 +256,13 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 		}
 
 		baseName := entry.Name()
-		id := strings.SplitN(baseName, "-", 2)[0]
-		createdBy := parseCreatedByFromFilename(baseName)
+		id, lineCount, createdBy := parseFilenameParts(baseName)
 
 		list = append(list, itemWithTime{
 			item: ScratchpadItem{
 				ID:        id,
 				Size:      int(info.Size()),
+				Lines:     lineCount,
 				CreatedBy: createdBy,
 			},
 			modTime: info.ModTime(),
@@ -259,8 +281,16 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 	return items, len(items), MaxScratchpadEntries, nil
 }
 
-// ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" /> macros
-// in text with the corresponding scratchpad text content according to D18/D28/D30.
+var (
+	scratchpadMacroRegex = regexp.MustCompile(`<SCRATCHPAD_DATA\s+([^>]+)\s*/?>`)
+	macroIDRegex         = regexp.MustCompile(`id=\\?"([^"\\]+)\\?"`)
+	macroSkipLinesRegex  = regexp.MustCompile(`skip_lines=\\?"(\d+)\\?"`)
+	macroNumLinesRegex   = regexp.MustCompile(`num_lines=\\?"(\d+)\\?"`)
+	macroJsonEscapeRegex = regexp.MustCompile(`json_escape=\\?"?(true|1|false|0)\\?"?`)
+)
+
+// ExpandScratchpadMacros replaces any inline <SCRATCHPAD_DATA id="X" skip_lines="N" num_lines="M" json_escape="true" /> macros
+// in text with the corresponding scratchpad text content according to D18/D28/D30/D37.
 func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 	if !strings.Contains(text, "<SCRATCHPAD_DATA") {
 		return text, nil
@@ -291,11 +321,27 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 			numLines = &val
 		}
 
+		jsonEscape := false
+		if jsonMatch := macroJsonEscapeRegex.FindStringSubmatch(match); len(jsonMatch) >= 2 {
+			val := strings.ToLower(jsonMatch[1])
+			if val == "true" || val == "1" {
+				jsonEscape = true
+			}
+		}
+
 		content, err := GetScratchpad(agentDir, id, skipLines, numLines)
 		if err != nil {
 			firstErr = fmt.Errorf("scratchpad entry %q not found for macro expansion", id)
 			return match
 		}
+
+		if jsonEscape {
+			b, err := json.Marshal(content)
+			if err == nil && len(b) >= 2 {
+				content = string(b[1 : len(b)-1])
+			}
+		}
+
 		return content
 	})
 

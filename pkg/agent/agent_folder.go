@@ -132,7 +132,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 3. list_scratchpads
 	listTool, err := functiontool.New(functiontool.Config{
 		Name:        "list_scratchpads",
-		Description: "List metadata for all currently-live scratchpad entries (ID, size, created_by), ordered oldest-first, and current capacity usage.",
+		Description: "List metadata for all currently-live scratchpad entries (ID, size, lines, created_by), ordered oldest-first, and current capacity usage.",
 	}, func(ctx agent.Context, args ListScratchpadsArgs) (ListScratchpadsResult, error) {
 		items, count, capVal, err := ListScratchpads(agentDir)
 		if err != nil {
@@ -181,7 +181,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 			"- args entries are passed as literal argv elements, not shell-parsed - no quoting or escaping needed for spaces/special characters.\n"+
 			"- The agent's scratchpad may already contain the data it needs - check before running a command to regenerate something already available.\n"+
 			"- Running a command with no arguments or --help is a legitimate way to learn what it is, how to use it, and what arguments it takes.\n"+
-			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" /> macros (skip_lines/num_lines optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" />, so it can be piped straight into another command's args/stdin this way.",
+			"- args entries and the stdin field both support inline <SCRATCHPAD_DATA id=\"X\" skip_lines=\"N\" num_lines=\"M\" json_escape=\"true\" /> macros (skip_lines/num_lines/json_escape optional) - this substitutes the referenced scratchpad entry's content directly, without you ever having to read or repaste it yourself. When json_escape=\"true\" is set, content is substituted as JSON-escaped text (quotes, newlines, and backslashes escaped per RFC 8259) without adding surrounding quotes. Large stdout/stderr from this same tool is automatically captured into a fresh scratchpad entry and returned as <SCRATCHPAD_DATA id=\"X\" size=\"BYTES\" lines=\"LINES\" />, so it can be piped straight into another command's args/stdin this way.",
 		cmdListStr,
 	)
 
@@ -343,7 +343,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		if err != nil {
 			return "", fmt.Errorf("failed to create stdout scratchpad entry: %w", err)
 		}
-		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" /></STDOUT>", entry.ID, entry.Size)
+		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"%d\" /></STDOUT>", entry.ID, entry.Size, entry.Lines)
 	} else if len(stdoutBytes) > 0 {
 		stdoutBlock = fmt.Sprintf("<STDOUT>%s</STDOUT>", string(stdoutBytes))
 	} else {
@@ -356,7 +356,7 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		if err != nil {
 			return "", fmt.Errorf("failed to create stderr scratchpad entry: %w", err)
 		}
-		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" /></STDERR>", entry.ID, entry.Size)
+		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"%d\" /></STDERR>", entry.ID, entry.Size, entry.Lines)
 	} else if len(stderrBytes) > 0 {
 		stderrBlock = fmt.Sprintf("<STDERR>%s</STDERR>", string(stderrBytes))
 	}

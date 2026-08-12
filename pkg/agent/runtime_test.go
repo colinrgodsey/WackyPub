@@ -13,7 +13,6 @@ func TestLoadRuntimeConfig(t *testing.T) {
 		"endpoint": "http://localhost:11434/v1",
 		"model": "llama3",
 		"apiKey": "test-key",
-		"sessionCompactPct": 40.0,
 		"contextWindow": 4096
 	}`
 
@@ -33,9 +32,6 @@ func TestLoadRuntimeConfig(t *testing.T) {
 	if cfg.Model != "llama3" {
 		t.Errorf("expected model llama3, got %s", cfg.Model)
 	}
-	if cfg.SessionCompactPct != 40.0 {
-		t.Errorf("expected compact pct 40.0, got %f", cfg.SessionCompactPct)
-	}
 	if cfg.ContextWindow != 4096 {
 		t.Errorf("expected context window 4096, got %d", cfg.ContextWindow)
 	}
@@ -51,7 +47,6 @@ func TestLoadRuntimeConfigSymlink(t *testing.T) {
 		"endpoint": "https://api.openai.com/v1",
 		"model": "gpt-4o",
 		"apiKey": "sk-test",
-		"sessionCompactPct": 50.0,
 		"contextWindow": 8192
 	}`
 
