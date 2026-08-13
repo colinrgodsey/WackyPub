@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/colinrgodsey/WackyPubAI/pkg/filesrw"
+	"github.com/colinrgodsey/WackyPub/pkg/filesrw"
 )
 
 var (

@@ -14,7 +14,7 @@ import (
 
 const DefaultWorkspaceDomain = "wackypub.local"
 
-const DefaultWorkspaceRootGitignoreContent = `# Default WackyPubAI workspace root gitignore rules (D35)
+const DefaultWorkspaceRootGitignoreContent = `# Default WackyPub workspace root gitignore rules (D35)
 # Exclude everything by default so agent folders are not tracked in the workspace root repository
 *
 
@@ -23,7 +23,7 @@ const DefaultWorkspaceRootGitignoreContent = `# Default WackyPubAI workspace roo
 !/MANIFEST.md
 `
 
-const DefaultAgentGitignoreContent = `# Default WackyPubAI agent gitignore rules (D35)
+const DefaultAgentGitignoreContent = `# Default WackyPub agent gitignore rules (D35)
 # Exclude everything by default so scratch/temporary files aren't automatically tracked
 *
 

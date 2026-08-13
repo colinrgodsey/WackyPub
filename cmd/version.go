@@ -14,9 +14,9 @@ var (
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
-	Short: "Print version information for WackyPubAI CLI",
+	Short: "Print version information for WackyPub CLI",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("WackyPubAI CLI %s\n", Version)
+		fmt.Printf("WackyPub CLI %s\n", Version)
 		fmt.Printf("Google ADK Version: %s\n", ADKVersion)
 		fmt.Printf("Go Version:         %s\n", runtime.Version())
 		fmt.Printf("OS/Arch:            %s/%s\n", runtime.GOOS, runtime.GOARCH)

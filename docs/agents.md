@@ -1,6 +1,6 @@
-# 🏛️ WackyPubAI Architecture: Agent Session Management
+# 🏛️ WackyPub Architecture: Agent Session Management
 
-This document details the architecture, directory specs, lifecycle, compaction mechanics, and Google Agent Development Kit (ADK) integration for agent sessions in **WackyPubAI**.
+This document details the architecture, directory specs, lifecycle, compaction mechanics, and Google Agent Development Kit (ADK) integration for agent sessions in **WackyPub**.
 
 > This is the deep reference: full schemas, diagrams, and mechanics. For quick orientation when working in this repo, and for the *why* behind specific design choices, see [`.agents/AGENTS.md`](../.agents/AGENTS.md) and [`.agents/DECISIONS.md`](../.agents/DECISIONS.md).
 
@@ -30,7 +30,7 @@ This document details the architecture, directory specs, lifecycle, compaction m
 
 ## 1. Overview
 
-WackyPubAI manages agents using a file-system-first architecture. Each agent operates within a dedicated directory located inside a workspace directory (`<ws_dir>`).
+WackyPub manages agents using a file-system-first architecture. Each agent operates within a dedicated directory located inside a workspace directory (`<ws_dir>`).
 
 ```
 <ws_dir>/
@@ -230,11 +230,11 @@ You are Ignis, an ancient wizard.
 
 ## 4. Google ADK Integration Layer
 
-WackyPubAI integrates with **Google Agent Development Kit v2** (`google.golang.org/adk/v2`) for core types (`model.LLM`, `model.LLMRequest`/`LLMResponse`, `agent.Agent`, `session.Event`, `tool.Tool`), and executes generation turns directly via ADK's `runner.Runner` powered by a custom file-backed `session.Service` (`FileSessionService` in `pkg/agent/file_session_service.go`).
+WackyPub integrates with **Google Agent Development Kit v2** (`google.golang.org/adk/v2`) for core types (`model.LLM`, `model.LLMRequest`/`LLMResponse`, `agent.Agent`, `session.Event`, `tool.Tool`), and executes generation turns directly via ADK's `runner.Runner` powered by a custom file-backed `session.Service` (`FileSessionService` in `pkg/agent/file_session_service.go`).
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      WackyPubAI CLI                         │
+│                      WackyPub CLI                         │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                                ▼
@@ -287,7 +287,7 @@ When running `wackypub agent <agent_id> generate`:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant CLI as WackyPubAI CLI
+    participant CLI as WackyPub CLI
     participant Agent as FolderAgent Manager
     participant Compactor as Compaction Engine
     participant LLM as OpenAI-Compatible Model (ADK)
@@ -511,7 +511,7 @@ All agent functionality is exposed as a Go SDK (`agent.AgentSDK`) in `pkg/agent`
 
 ### Initializing the SDK
 ```go
-import "github.com/colinrgodsey/WackyPubAI/pkg/agent"
+import "github.com/colinrgodsey/WackyPub/pkg/agent"
 
 // Initialize SDK for workspace directory
 sdk := agent.NewSDK("./my_workspace")

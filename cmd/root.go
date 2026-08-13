@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	adkAgent "github.com/colinrgodsey/WackyPubAI/pkg/agent"
-	"github.com/colinrgodsey/WackyPubAI/pkg/config"
+	adkAgent "github.com/colinrgodsey/WackyPub/pkg/agent"
+	"github.com/colinrgodsey/WackyPub/pkg/config"
 )
 
 var (
@@ -17,7 +17,6 @@ var (
 	modelName    string
 	apiKey       string
 	maxToolTurns int
-	skillFlagVal string
 	cfg          *config.Config
 
 	// BundledA2ASkill holds embedded skills/wackypub-a2a/SKILL.md text passed from main.go (D34).
@@ -25,6 +24,31 @@ var (
 	// BundledWSSkill holds embedded skills/wackypub-ws/SKILL.md text passed from main.go (D34).
 	BundledWSSkill string
 )
+
+// bundledSkill pairs the short name accepted by "wackypub skill <name>" with the
+// parsed skill (frontmatter Name/Description, not necessarily the same short form).
+type bundledSkill struct {
+	ShortName string
+	Skill     *adkAgent.Skill
+}
+
+// bundledSkills returns the bundled skills in a fixed order, each parsed for its own
+// description from frontmatter rather than a separately hardcoded copy (D40). ShortName
+// is the form GetSkillContent actually accepts, kept in sync with the Use: line below.
+func bundledSkills() ([]bundledSkill, error) {
+	a2a, err := adkAgent.ParseSkillContent(BundledA2ASkill, "wackypub-a2a")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse bundled a2a skill: %w", err)
+	}
+	ws, err := adkAgent.ParseSkillContent(BundledWSSkill, "wackypub-ws")
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse bundled ws skill: %w", err)
+	}
+	return []bundledSkill{
+		{ShortName: "a2a", Skill: a2a},
+		{ShortName: "ws", Skill: ws},
+	}, nil
+}
 
 // GetSkillContent resolves and returns skill guidance by name (a2a, ws).
 func GetSkillContent(name string) (string, error) {
@@ -34,8 +58,6 @@ func GetSkillContent(name string) (string, error) {
 		return BundledA2ASkill, nil
 	case "ws", "workspace", "wackypub-ws":
 		return BundledWSSkill, nil
-	case "", "all":
-		return BundledA2ASkill, nil
 	default:
 		return "", fmt.Errorf("unknown skill %q. Available skills: a2a, ws", name)
 	}
@@ -43,15 +65,27 @@ func GetSkillContent(name string) (string, error) {
 
 var skillCmd = &cobra.Command{
 	Use:   "skill [a2a|ws]",
-	Short: "Print bundled WackyPub skill guidance (a2a, ws) to stdout and exit",
-	Long:  "Prints embedded skill guidance (skills/wackypub-a2a/SKILL.md or skills/wackypub-ws/SKILL.md) directly to stdout.",
-	Args:  cobra.MaximumNArgs(1),
+	Short: "List bundled WackyPub skills, or print one - if you're an agent, you'll want to load one of these",
+	Long: `With no argument, lists the bundled WackyPub skills (name and description) and exits.
+With a name (a2a or ws), prints that skill's full guidance (skills/wackypub-a2a/SKILL.md or
+skills/wackypub-ws/SKILL.md) directly to stdout.
+
+If you're an agent driving this CLI cold, "wackypub skill" is a reasonable first move.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := ""
-		if len(args) > 0 {
-			name = args[0]
+		if len(args) == 0 {
+			skills, err := bundledSkills()
+			if err != nil {
+				return err
+			}
+			fmt.Println("Available skills:")
+			for _, sk := range skills {
+				fmt.Printf("  %-4s  %s\n", sk.ShortName, sk.Skill.Description)
+			}
+			fmt.Println(`Run "wackypub skill <name>" to print one.`)
+			return nil
 		}
-		content, err := GetSkillContent(name)
+		content, err := GetSkillContent(args[0])
 		if err != nil {
 			return err
 		}
@@ -63,32 +97,15 @@ var skillCmd = &cobra.Command{
 // RootCmd represents the base command when called without any subcommands.
 var RootCmd = &cobra.Command{
 	Use:   "wackypub",
-	Short: "WackyPubAI - Folder-based Agent Management CLI powered by Google ADK",
-	Long: `WackyPubAI is a command-line tool and Go SDK for managing folder-based AI agents.
+	Short: "WackyPub - Folder-based Agent Management CLI powered by Google ADK",
+	Long: `WackyPub is a command-line tool and Go SDK for managing folder-based AI agents.
 
-Built on top of Google Agent Development Kit (ADK) in Go, WackyPubAI supports workspace agent directories,
+Built on top of Google Agent Development Kit (ADK) in Go, WackyPub supports workspace agent directories,
 OpenAI-compatible model adapters, macro prompt inclusion (@<FILE_PATH>), and auto-compaction.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if cmd.Flags().Changed("skill") {
-			content, err := GetSkillContent(skillFlagVal)
-			if err != nil {
-				return err
-			}
-			fmt.Print(content)
-			return nil
-		}
 		return cmd.Help()
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if cmd.Flags().Changed("skill") {
-			content, err := GetSkillContent(skillFlagVal)
-			if err != nil {
-				return err
-			}
-			fmt.Print(content)
-			os.Exit(0)
-		}
-
 		var err error
 		cfgPath := cfgFile
 		if cfgPath == "" {
@@ -137,7 +154,5 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
-	RootCmd.PersistentFlags().StringVar(&skillFlagVal, "skill", "", "Print bundled WackyPub skill guidance (a2a|ws) to stdout and exit")
-	RootCmd.PersistentFlags().Lookup("skill").NoOptDefVal = "a2a"
 	RootCmd.AddCommand(skillCmd)
 }

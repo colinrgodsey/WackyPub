@@ -1,6 +1,6 @@
 # DECISIONS.md
 
-Design decisions for `WackyPubAI` and the rationale behind them. This is
+Design decisions for `WackyPub` and the rationale behind them. This is
 living documentation: it states what's true now and why, not how it got
 there. When a decision changes, this file is rewritten to reflect the
 current state - it doesn't accumulate a history of reversals.
@@ -160,7 +160,7 @@ CLI-only business logic is allowed to live in `cmd/agent.go`.
 primary consumers are agent platforms shelling out to `wackypub` as a single
 command per call (see D13) - they only ever see the CLI surface. Separately,
 a Go-native agent platform or other implementer can `import
-"github.com/colinrgodsey/WackyPubAI/pkg/agent"` and call `AgentSDK` directly,
+"github.com/colinrgodsey/WackyPub/pkg/agent"` and call `AgentSDK` directly,
 skipping the CLI entirely. Keeping the SDK method as the single place
 behavior and documentation live means both callers get the same behavior
 for free, and neither one requires re-deriving or duplicating what already
@@ -201,7 +201,7 @@ a diagnostic command is worse than not answering it. If scaffolding is
 wanted later, it should be its own explicitly-named operation (e.g.
 `agent <id> init`), not something `workspace` does implicitly.
 
-## D13: An agent's tool for using WackyPubAI is single `wackypub` command execution, not a shell and not a hand-authored tool schema
+## D13: An agent's tool for using WackyPub is single `wackypub` command execution, not a shell and not a hand-authored tool schema
 
 The intended integration for an LLM agent platform is a tool constrained to
 running one `wackypub` subcommand per call - not general shell/bash access
@@ -843,6 +843,18 @@ Implemented in `pkg/agent/scratchpad.go` and `pkg/agent/agent_folder.go`. Verifi
 **Line-counting convention**: match `TailFile`'s existing logic (`pkg/filesrw/ops.go`, D29) exactly rather than inventing a second one - split on `\n`, drop a trailing empty segment so a file ending in a newline doesn't get counted as having one extra (empty) line.
 
 **Why**: line count is something an agent deciding how to paginate a large auto-captured entry (`get_scratchpad`'s `skip_lines`/`num_lines`) needs before it can plan a sensible read, and `list_scratchpads` giving byte size without line count forces a guess. Doing it via filename encoding rather than a content read keeps `list_scratchpads` exactly as cheap as D30 made it, rather than trading away that property for a UI convenience.
+
+## D40: `wackypub skill` drops the `--skill` flag; no-argument form lists instead of defaulting
+
+Implemented in `cmd/root.go` and `pkg/agent/skill.go` (factored `ParseSkillFile` into a shared `ParseSkillContent` core so the listing reads real frontmatter instead of a hardcoded copy). Verified live - no-arg listing, named-skill printing, the new `--help` hint, and the removed `--skill` flag correctly erroring. Amends D34.
+
+**`--skill` persistent flag removed entirely.** D34 shipped both a `wackypub skill [a2a|ws]` subcommand and a `--skill [a2a|ws]` flag doing the same thing two ways - one canonical path is simpler for both a human and an agent discovering the CLI to reason about, and the subcommand is the one that fits this project's own `--help`-driven discovery convention (a flag on the root command doesn't show up in `wackypub --help`'s own subcommand listing the way `wackypub skill --help` does).
+
+**`wackypub skill` with no argument now lists the available skills instead of silently defaulting to `a2a`.** D34's `GetSkillContent("")` fell back to printing `wackypub-a2a`'s content - meaning running the bare command with no argument silently picked one skill over the other with no indication a choice was even being made. Now it prints a list (name + each skill's own `description` from its frontmatter, not a separately hardcoded copy that could drift from it) and requires picking one by name to actually print it, same shape as the on-demand skill picker inside a live agent already uses (`agent_folder.go`'s `load_skill` listing).
+
+**Agent-facing hint added to the command's own `Short` description**, since that's the line that actually shows up in `wackypub --help`'s "Available Commands" listing - something to the effect of "if you're an agent, you'll want to load one of these" - so an agent doing cold `--help`-driven discovery (the CLI's own stated design constraint, see Philosophy) has a reason to actually run `wackypub skill` rather than skip past it as a human-only utility command.
+
+**Why**: two ways to do the same thing is exactly what D34 shouldn't have shipped given this project's own repeated stance against redundant surfaces, and silently defaulting a no-argument invocation to one specific skill hides that a choice is being made at all - listing makes the choice explicit instead of guessing on the caller's behalf.
 
 
 

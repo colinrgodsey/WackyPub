@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	adkAgent "github.com/colinrgodsey/WackyPubAI/pkg/agent"
+	adkAgent "github.com/colinrgodsey/WackyPub/pkg/agent"
 )
 
 var (

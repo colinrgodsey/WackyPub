@@ -49,7 +49,7 @@ Everything below is on-disk convention — `wackypub workspace <agent_id>` will 
 
 ## Workspace Git Management & Versioning (D35)
 
-WackyPubAI supports pure-Go git versioning via `go-git`:
+WackyPub supports pure-Go git versioning via `go-git`:
 
 ```bash
 # Initialize git tracking for workspace or agent

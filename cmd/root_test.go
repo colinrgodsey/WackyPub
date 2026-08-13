@@ -36,6 +36,36 @@ func TestBundledSkillOutput(t *testing.T) {
 		}
 	})
 
+	t.Run("skill with no argument lists instead of defaulting", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		RootCmd.SetArgs([]string{"skill"})
+		err := RootCmd.Execute()
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		if err != nil {
+			t.Fatalf("unexpected error executing bare skill command: %v", err)
+		}
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		out := buf.String()
+
+		if !strings.Contains(out, "a2a") || !strings.Contains(out, "test a2a skill") {
+			t.Errorf("expected listing to include a2a's name and description, got: %q", out)
+		}
+		if !strings.Contains(out, "ws") || !strings.Contains(out, "test ws skill") {
+			t.Errorf("expected listing to include ws's name and description, got: %q", out)
+		}
+		if strings.Contains(out, "# Test A2A Skill") || strings.Contains(out, "# Test WS Skill") {
+			t.Errorf("expected a listing, not full skill body content, got: %q", out)
+		}
+	})
+
 	t.Run("skill ws subcommand", func(t *testing.T) {
 		oldStdout := os.Stdout
 		r, w, _ := os.Pipe()

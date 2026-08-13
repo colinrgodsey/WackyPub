@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Agent guidelines for working in the `WackyPubAI` repository.
+Agent guidelines for working in the `WackyPub` repository.
 
 > Companion docs in `.agents/`: [DECISIONS.md](./DECISIONS.md) (design
 > decisions and their rationale - read before changing session storage,
@@ -53,7 +53,7 @@ calls without a subprocess at all. Keeping the CLI layer thin and the SDK
 method as the single source of behavior is what lets both callers share the
 same implementation and documentation without duplicating either.
 
-**Module**: `github.com/colinrgodsey/WackyPubAI` (see `go.mod`)
+**Module**: `github.com/colinrgodsey/WackyPub` (see `go.mod`)
 **Go Version**: 1.25.7
 **ADK Version**: `google.golang.org/adk/v2` v2.0.0
 
@@ -104,7 +104,7 @@ go build -o bin/wackypub .
 ## Code Organization
 
 ```
-WackyPubAI/
+WackyPub/
 ├── cmd/                    # Cobra CLI command tree
 │   ├── root.go             # RootCmd, global flags (--ws, --config, -m, --api-key)
 │   ├── agent.go             # `agent` subcommands: add, generate, prompt, strip-signatures,

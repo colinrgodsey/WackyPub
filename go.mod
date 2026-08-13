@@ -1,4 +1,4 @@
-module github.com/colinrgodsey/WackyPubAI
+module github.com/colinrgodsey/WackyPub
 
 go 1.25.7
 

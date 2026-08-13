@@ -32,7 +32,7 @@ an agent's config).
   see D21.
 
 Both OpenRouter examples set `extraBody.reasoning.effort: "high"` - an
-OpenRouter-specific passthrough field, not something WackyPubAI interprets
+OpenRouter-specific passthrough field, not something WackyPub interprets
 itself. Swap the model string for any other OpenRouter-hosted model and
 this still applies.
 

@@ -1,6 +1,6 @@
 # 🎭 WackyPub
 
-A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal or personal agent.
+A CLI and Go SDK for folder-based AI agents — built on Google's **Agent Development Kit (ADK) v2** — where every agent is just a directory, every capability is a text file, every tool is an executable, and the same command interface an agent uses to explore its own tools is the one you use from your terminal or personal agent. Agents can call each other directly, turning a single assistant into a coordinated swarm.
 
 ---
 
@@ -39,6 +39,24 @@ No file-editing tool, no curated command list, no task-specific scaffolding. Ask
 
 Example prompts (tested on Haiku and Gemma 4 A4B):
 - `can you install sqlite and make a test database. verify you can use queries to create a table. while thats happening, can you have a sub-agent write and run a go script to compute the first 20 prime numbers, and have the other sub-agent pull the most up-to-date wikipedia article for dogs and give me the word count of the article plus 5 interesting facts.`
+
+---
+
+## Quick Start: Bring Your Own Agent
+
+Already driving this from a coding agent (Claude Code, or whatever you're using to read this)? Skip the container - install the binary and let your agent bootstrap the rest itself.
+
+```bash
+go install github.com/colinrgodsey/WackyPub@latest
+# go install names the binary after the repo (WackyPub) - rename it to match every command in this doc
+mv "$(go env GOBIN)/WackyPub" "$(go env GOBIN)/wackypub" 2>/dev/null || mv "$(go env GOPATH)/bin/WackyPub" "$(go env GOPATH)/bin/wackypub"
+```
+
+Then hand your agent a prompt along these lines:
+
+> I've installed a CLI called `wackypub` (it's on my PATH). Run `wackypub skill` to see what's bundled, then `wackypub skill ws` to learn how workspaces and agents are structured, and set one up for me right here - a workspace with one agent I can start talking to.
+
+That's the whole point of the bundled skills (D34, D40): the CLI teaches your agent how to use itself. Nothing in this README is required reading for it to get started.
 
 ---
 
@@ -81,7 +99,7 @@ Example prompts (tested on Haiku and Gemma 4 A4B):
 
 Security testing here is agent-driven, not just aspirational documentation. `wackypub` orchestrates a coordinator-and-worker swarm of its own agents to red-team a target tool's actual live build — propose → dedupe → execute → report rounds against a real binary running inside a disposable Docker container ([`docs/SWARM_TESTING.md`](docs/SWARM_TESTING.md)), not a hypothetical threat model on paper. It's also a legitimate standalone use case for `wackypub` itself, distinct from roleplay or orchestration - point the swarm at anything with a CLI surface, including `wackypub`'s own companion tools.
 
-It's already found real things. A swarm run caught a critical cross-agent hardlink bypass in `files-rw` (a companion filesystem access-control tool) - one agent could read another's supposedly walled-off files by hardlinking to them first. Found, documented, fixed, and re-verified against the fix - not a paper finding. The original report is preserved at the commit where it was written, before the fix it drove made the report itself obsolete: [`docs/files-rw-security-test.md`](https://github.com/colinrgodsey/WackyPubAI/blob/292d9b13cdc59b4f3428ce6c40b11f415fe27aa6/docs/files-rw-security-test.md).
+It's already found real things. A swarm run caught a critical cross-agent hardlink bypass in `files-rw` (a companion filesystem access-control tool) - one agent could read another's supposedly walled-off files by hardlinking to them first. Found, documented, fixed, and re-verified against the fix - not a paper finding. The original report is preserved at the commit where it was written, before the fix it drove made the report itself obsolete: [`docs/files-rw-security-test.md`](https://github.com/colinrgodsey/WackyPub/blob/3b65cdcd6b3322c540e4b0950de5232408f4e711/docs/files-rw-security-test.md).
 
 Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURITY_TESTING.md`](.agents/SECURITY_TESTING.md)): untested, tested-and-clean, or tested-with-a-finding. A tool's state resets to untested the instant its enforcement logic changes, so a passing grade can never silently go stale, and a finding stays on record - report and all - even after it's fixed, superseded by a dated follow-up rather than quietly erased.
 
@@ -94,6 +112,19 @@ Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURI
 - **Personal automation with real system tools** — symlink a toolset of read-only (or read-write, if you trust it) system utilities into an agent's `tools/` folder and let it operate your machine within whatever boundary you've drawn.
 - **Multi-character roleplay and narrative campaigns** — each character is its own agent with its own memory and voice; a narrator or player can interview them, and they can interview each other.
 - **Distilled, reusable knowledge across agents** — write a skill once (how to use a particular CLI, a house style guide, domain-specific guidance), symlink it into every agent that needs it, and update it in one place.
+
+---
+
+## Recommended Tooling
+
+A few tools worth linking into `tools/` for a real workspace, not just the demo:
+
+- **[QMD](https://github.com/tobi/qmd)** — on-device search built by Tobi Lütke (Shopify), giving agents local RAG over Markdown, notes, and docs: BM25 keyword search, vector semantic search, and LLM re-ranking, all in one local binary.
+- **[ast-grep](https://github.com/ast-grep/ast-grep)** — structural code search and rewriting via AST matching instead of regex.
+- **[playwright-cli](https://github.com/microsoft/playwright-cli)** — a CLI-native wrapper around Playwright browser automation, built specifically for terminal coding agents.
+- **[mcporter](https://github.com/openclaw/mcporter)** — auto-discovers and invokes MCP tools directly from the command line. Since `tools/` will run anything that's an executable, this means the entire MCP ecosystem becomes usable here with zero wackypub-side integration work.
+- **[files-rw](#security)** (recommended) — our own file access/editing suite, gated by a per-directory allowlist. Standalone repo coming soon; see [Security](#security) above for its actual track record, not just a claim.
+- **`wackypub` itself** (recommended) — yes, really. Linking `wackypub` into an agent's own `tools/` is what makes agent-to-agent calling possible in the first place (see [Philosophy](#philosophy)) - not a special integration, just another executable an agent happens to invoke. Necessary for any workspace that wants real cross-agent orchestration, not optional the way the rest of this list is.
 
 ---
 

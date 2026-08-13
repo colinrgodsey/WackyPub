@@ -7,7 +7,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config represents the top-level configuration for the WackyPubAI CLI.
+// Config represents the top-level configuration for the WackyPub CLI.
 type Config struct {
 	DefaultModel string `yaml:"default_model"`
 	APIKey       string `yaml:"api_key,omitempty"`

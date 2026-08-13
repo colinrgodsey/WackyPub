@@ -5,7 +5,7 @@ always_load: true
 ---
 # Scratchpad Efficiency & Swarm Communication Patterns
 
-The persistent scratchpad (`<agent_id>/scratchpad.json`) is WackyPubAI's out-of-band memory buffer and inter-agent data pipe. Storing large payloads in scratchpads protects context windows, eliminates token waste, and enables high-throughput data flows between agents and tooling.
+The persistent scratchpad (`<agent_id>/scratchpad.json`) is WackyPub's out-of-band memory buffer and inter-agent data pipe. Storing large payloads in scratchpads protects context windows, eliminates token waste, and enables high-throughput data flows between agents and tooling.
 
 ---
 
@@ -78,7 +78,7 @@ When **Agent B** wants to copy/mirror a large scratchpad entry (e.g., `"k3p1"`) 
 ```
 
 ### How Auto-Capture Mirrors the Payload
-- Since `wackypub agent agentA scratchpad read k3p1` prints the payload to stdout, if the content exceeds **4,000 bytes** (`ScratchpadOutputThreshold`), WackyPubAI **automatically captures stdout into a fresh local scratchpad entry for Agent B** (`CreatedBy: "run_command"`) and returns:
+- Since `wackypub agent agentA scratchpad read k3p1` prints the payload to stdout, if the content exceeds **4,000 bytes** (`ScratchpadOutputThreshold`), WackyPub **automatically captures stdout into a fresh local scratchpad entry for Agent B** (`CreatedBy: "run_command"`) and returns:
   ```xml
   <STDOUT><SCRATCHPAD_DATA id="m9x2" size="102400" /></STDOUT>
   ```
@@ -130,14 +130,14 @@ Pass pre-staged prompts, templates, or raw inputs directly to a command tool wit
 }
 ```
 
-- WackyPubAI server expands the `<SCRATCHPAD_DATA>` macro tags in `argv` and `stdin` immediately before process execution.
+- WackyPub server expands the `<SCRATCHPAD_DATA>` macro tags in `argv` and `stdin` immediately before process execution.
 - Argument size safety cap: expanded CLI positional arguments exceeding **500,000 bytes** fail fast to prevent OS exec argument limits (`E2BIG`).
 
 ---
 
 ## 5. Iterative Search & Slice Navigation
 
-When command tool output exceeds **4,000 bytes**, WackyPubAI automatically captures stdout/stderr into a fresh scratchpad entry and returns tag placeholders containing the entry `id` and payload `size` in bytes:
+When command tool output exceeds **4,000 bytes**, WackyPub automatically captures stdout/stderr into a fresh scratchpad entry and returns tag placeholders containing the entry `id` and payload `size` in bytes:
 ```xml
 <STDOUT><SCRATCHPAD_DATA id="v8n2" size="45000" /></STDOUT>
 ```

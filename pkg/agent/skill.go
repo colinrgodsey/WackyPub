@@ -36,10 +36,19 @@ func ParseSkillFile(filePath string) (*Skill, error) {
 		return nil, fmt.Errorf("failed to read skill file %s: %w", filePath, err)
 	}
 
-	content := string(data)
-	dirPath := filepath.Dir(filePath)
-	folderName := filepath.Base(dirPath)
+	folderName := filepath.Base(filepath.Dir(filePath))
+	sk, err := ParseSkillContent(string(data), folderName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse skill file %s: %w", filePath, err)
+	}
+	sk.Path = filePath
+	return sk, nil
+}
 
+// ParseSkillContent parses a SKILL.md document's optional YAML frontmatter and body from
+// an in-memory string (e.g. one embedded via go:embed) rather than a file on disk.
+// fallbackName is used as Name when the frontmatter doesn't specify one.
+func ParseSkillContent(content string, fallbackName string) (*Skill, error) {
 	var fm SkillFrontmatter
 	body := content
 
@@ -50,14 +59,14 @@ func ParseSkillFile(filePath string) (*Skill, error) {
 			yamlText := parts[0]
 			body = strings.TrimSpace(parts[1])
 			if err := yaml.Unmarshal([]byte(yamlText), &fm); err != nil {
-				return nil, fmt.Errorf("failed to parse YAML frontmatter in %s: %w", filePath, err)
+				return nil, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
 			}
 		}
 	}
 
 	name := strings.TrimSpace(fm.Name)
 	if name == "" {
-		name = folderName
+		name = fallbackName
 	}
 
 	desc := strings.TrimSpace(fm.Description)
@@ -70,7 +79,6 @@ func ParseSkillFile(filePath string) (*Skill, error) {
 		Description: desc,
 		AlwaysLoad:  fm.AlwaysLoad,
 		Body:        body,
-		Path:        filePath,
 	}, nil
 }
 
