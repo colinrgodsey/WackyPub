@@ -17,7 +17,7 @@ This document details the architecture, directory specs, lifecycle, compaction m
    - [session.jsonl](#sessionjsonl)
    - [WACKYPUB_ALLOWED_AGENTS](#wackypub_allowed_agents)
    - [tools/ Directory](#tools-directory)
-   - [scratchpad.json](#scratchpadjson)
+   - [scratchpad/ Directory](#scratchpad-directory)
 4. [Google ADK Integration Layer](#4-google-adk-integration-layer)
 5. [Execution Lifecycle](#5-execution-lifecycle)
 6. [Session Compaction Mechanics](#6-session-compaction-mechanics)
@@ -457,10 +457,10 @@ wackypub agent <agent_id> scratchpad read <entry_id> [--skip-lines N] [--num-lin
 wackypub agent <agent_id> scratchpad list
 wackypub agent <agent_id> scratchpad search <entry_id> <query> [--regex] [--case-insensitive] [--max-results N]
 ```
-- CLI-level access to an agent's persistent scratchpad (`<ws_dir>/<agent_id>/scratchpad.json`) (see DECISIONS.md D27).
+- CLI-level access to an agent's persistent scratchpad (`<ws_dir>/<agent_id>/scratchpad/`) (see DECISIONS.md D27).
 - `create`: accepts text via positional argument, `--message` flag, or piped stdin. Acquires session lock for atomic write.
 - `read`, `list`, `search`: pure reads against atomic temp-file replacement, executing without session lock.
-- Supports both `wackypub agent <agent_id> scratchpad <subverb>` and `wackypub agent scratchpad <subverb> <agent_id>` syntaxes for positional arguments - but flags (`--skip-lines`, `--regex`, etc.) only work in the second form (`wackypub agent scratchpad <subverb> <agent_id> ... --flag`); see `skills/wackypub/SKILL.md`'s Flag Ordering Caveat.
+- Supports both `wackypub agent <agent_id> scratchpad <subverb>` and `wackypub agent scratchpad <subverb> <agent_id>` syntaxes for positional arguments - but flags (`--skip-lines`, `--regex`, etc.) only work in the second form (`wackypub agent scratchpad <subverb> <agent_id> ... --flag`); see `skills/wackypub-a2a/SKILL.md`'s Flag Ordering Caveat.
 
 ### Workspace Diagnostics & Git Versioning (`workspace`)
 ```bash
@@ -511,7 +511,7 @@ All agent functionality is exposed as a Go SDK (`agent.AgentSDK`) in `pkg/agent`
 
 ### Initializing the SDK
 ```go
-import "github.com/colinrgodsey/WackyPub/pkg/agent"
+import "github.com/colinrgodsey/wackypub/pkg/agent"
 
 // Initialize SDK for workspace directory
 sdk := agent.NewSDK("./my_workspace")

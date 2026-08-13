@@ -5,7 +5,7 @@ always_load: true
 ---
 # Scratchpad Efficiency & Swarm Communication Patterns
 
-The persistent scratchpad (`<agent_id>/scratchpad.json`) is WackyPub's out-of-band memory buffer and inter-agent data pipe. Storing large payloads in scratchpads protects context windows, eliminates token waste, and enables high-throughput data flows between agents and tooling.
+The persistent scratchpad is WackyPub's out-of-band memory buffer and inter-agent data pipe. Storing large payloads in scratchpads protects context windows, eliminates token waste, and enables high-throughput data flows between agents and tooling. *Each agent has their own scratchpad with its own IDs*. If you want to share one of your own scratchpad entries with another agent, use the `Zero-Token Inter-Agent Data Hand-Off` protocol below.
 
 ---
 
@@ -16,14 +16,16 @@ The persistent scratchpad (`<agent_id>/scratchpad.json`) is WackyPub's out-of-ba
 > Every cross-agent CLI/SDK call (e.g. `wackypub agent <target_id> scratchpad create/read/list/search` or `wackypub agent <target_id> prompt`) validates the target agent against `<ws_dir>/<calling_agent>/WACKYPUB_ALLOWED_AGENTS`.
 > 
 > **The Gotcha:** Self-targeting is denied by default! If an agent invokes `wackypub` CLI commands via `run_command` targeting **itself** (e.g., `wackypub agent agentB scratchpad create`), `agentB` **must be explicitly listed in its own `WACKYPUB_ALLOWED_AGENTS` file**, otherwise the call will fail with an authorization error.
+>
+> You don't need to go read that file directly to check - run `wackypub workspace` (no arguments) from your own directory and it tells you directly who you can talk to.
 
 ---
 
 ## Core Capabilities Quick Reference
 
 > [!TIP]
-> **Automatic `run_command` Output Capture (4,000 Byte Threshold):**
-> Any stdout or stderr output produced by a tool executed via `run_command` that exceeds **4,000 bytes** (`ScratchpadOutputThreshold`) is **automatically captured into a fresh scratchpad entry**.
+> **Automatic `run_command` Output Capture:**
+> Any stdout or stderr output produced by a tool executed via `run_command` that exceeds some threshold is **automatically captured into your scratchpad as a new entry**.
 > Instead of dumping thousands of tokens into your context window, `run_command` returns placeholder tags containing the entry ID and exact payload size in bytes:
 > `<STDOUT><SCRATCHPAD_DATA id="v8n2" size="15420" /></STDOUT>`
 
@@ -52,7 +54,7 @@ Agent A uses `run_command` to execute `wackypub` and write the payload *directly
 ```
 *Output:* `Created scratchpad entry "k3p1" (102400 bytes) for agent "agentB".`
 
-*(Prerequisite: `agentB` must be listed in `ws/agentA/WACKYPUB_ALLOWED_AGENTS`).*
+*(Prerequisite: Agent A must be allowed to talk to agentB - check with `wackypub workspace` from your own directory if you're not sure.)*
 
 Agent A then prompts Agent B with a minimal 1-line turn:
 ```json
@@ -78,17 +80,17 @@ When **Agent B** wants to copy/mirror a large scratchpad entry (e.g., `"k3p1"`) 
 ```
 
 ### How Auto-Capture Mirrors the Payload
-- Since `wackypub agent agentA scratchpad read k3p1` prints the payload to stdout, if the content exceeds **4,000 bytes** (`ScratchpadOutputThreshold`), WackyPub **automatically captures stdout into a fresh local scratchpad entry for Agent B** (`CreatedBy: "run_command"`) and returns:
+- Since `wackypub agent agentA scratchpad read k3p1` prints the payload to stdout, if the content exceeds some threshold, WackyPub **automatically captures stdout into a fresh local scratchpad entry for Agent B** (`CreatedBy: "run_command"`) and returns:
   ```xml
   <STDOUT><SCRATCHPAD_DATA id="m9x2" size="102400" /></STDOUT>
   ```
-- **Result**: Agent B instantly gets a local scratchpad entry ID (`"m9x2"`) in its own `scratchpad.json` containing the mirrored content.
+- **Result**: Agent B instantly gets its own local scratchpad entry ID (`"m9x2"`) containing the mirrored content.
 - **Advantages over shell pipes**:
   - Requires no `sh` binary (which agents typically do not have in `tools/`).
   - Avoids self-targeting session lock conflicts.
   - Zero tokens spent streaming payload bytes into conversation turns!
 
-*(Prerequisite: `agentA` must be listed in `ws/agentB/WACKYPUB_ALLOWED_AGENTS`).*
+*(Prerequisite: `agentB` must be allowed to communicate with`agentA`).*
 
 ---
 
@@ -244,8 +246,6 @@ An agent can concatenate, prefix, or stitch together multiple scratchpad entries
    }
    ```
    *Output:* `Created scratchpad entry "w2e1" for agent "worker2".`
-
-   *(Prerequisite: `worker1` and `worker2` must be listed in Coordinator's `WACKYPUB_ALLOWED_AGENTS`).*
 
 2. **Map Phase**: Coordinator prompts Worker 1 and Worker 2 to analyze their assigned scratchpads (`w1e1`, `w2e1`) and deposit their partial summaries back into Coordinator's scratchpad.
 

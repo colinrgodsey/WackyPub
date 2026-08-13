@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
-	adkAgent "github.com/colinrgodsey/WackyPub/pkg/agent"
+	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
 )
 
 // wackypub workspace [agent_id]
@@ -70,6 +71,18 @@ var initGitCmd = &cobra.Command{
 }
 
 func printWorkspaceOverview(sdk *adkAgent.AgentSDK, wsDir string) error {
+	if selfID, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
+		fmt.Printf("You are agent %q.\n", selfID)
+		if insp, err := sdk.InspectAgent(selfID); err == nil {
+			if len(insp.AllowedAgents) > 0 {
+				fmt.Printf("Agents you can talk to: %s\n", strings.Join(insp.AllowedAgents, ", "))
+			} else {
+				fmt.Println("Agents you can talk to: none (no WACKYPUB_ALLOWED_AGENTS file, or it's empty)")
+			}
+		}
+		fmt.Println()
+	}
+
 	absDir, err := filepath.Abs(wsDir)
 	if err != nil {
 		absDir = wsDir
@@ -252,6 +265,17 @@ func printAgentInspection(sdk *adkAgent.AgentSDK, agentID string) error {
 	return nil
 }
 
+// refuseIfAgentContext blocks an operator/diagnostic command from running when the
+// current directory is an agent's own directory, according to D41. No override -
+// run from the workspace root (or anywhere that isn't literally that agent's own
+// directory) instead.
+func refuseIfAgentContext(cmdName string) error {
+	if id, ok := adkAgent.CurrentAgentIDFromCWD(); ok {
+		return fmt.Errorf("%q is an operator/diagnostic command, not available to agents - refusing because the current directory is agent %q's own directory", cmdName, id)
+	}
+	return nil
+}
+
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot",
 	Short: "Create or update MANIFEST.md snapshot of agent commit SHAs",
@@ -262,6 +286,9 @@ Behavior:
   - Records each agent's active HEAD commit SHA in MANIFEST.md with a timestamped Markdown table.
   - If the workspace root repository (<ws_dir>/.git) exists, commits MANIFEST.md with message 'snapshot'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := refuseIfAgentContext("wackypub workspace snapshot"); err != nil {
+			return err
+		}
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
 			return err
@@ -288,6 +315,9 @@ Behavior:
   - Tags each per-agent repository (<ws_dir>/<agent_id>/.git) with 'tag-<agent_id>'.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := refuseIfAgentContext("wackypub workspace tag"); err != nil {
+			return err
+		}
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
 			return err
@@ -320,6 +350,9 @@ Behavior:
     - Pushes all per-agent git tags (e.g. tag-<agent_id>) to the remote.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := refuseIfAgentContext("wackypub workspace push"); err != nil {
+			return err
+		}
 		if !confirmPush {
 			return fmt.Errorf("WARNING: this will push full agent history including runtime.json/.env which may contain API keys — only push to a private, trusted remote. re-run this command with the --i-understand flag to proceed")
 		}

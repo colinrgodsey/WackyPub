@@ -7,8 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	adkAgent "github.com/colinrgodsey/WackyPub/pkg/agent"
-	"github.com/colinrgodsey/WackyPub/pkg/config"
+	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
+	"github.com/colinrgodsey/wackypub/pkg/config"
 )
 
 var (

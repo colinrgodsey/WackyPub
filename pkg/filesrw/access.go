@@ -103,6 +103,46 @@ func LoadAccess(cwd string) (*Access, error) {
 	return acc, nil
 }
 
+// Summary formats a's granted permissions for an agent to read directly,
+// according to D42 - read-write roots, read-only roots (readableRoots minus
+// writableRoots, not the raw superset relationship the struct stores
+// internally), and a note that FILES_RW_ACCESS's own path is always denied
+// for writes regardless of the rules below.
+func (a *Access) Summary() string {
+	writable := make(map[string]bool, len(a.writableRoots))
+	for _, root := range a.writableRoots {
+		writable[root] = true
+	}
+
+	var readOnly []string
+	for _, root := range a.readableRoots {
+		if !writable[root] {
+			readOnly = append(readOnly, root)
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("Read-write:\n")
+	if len(a.writableRoots) == 0 {
+		b.WriteString("  (none)\n")
+	}
+	for _, root := range a.writableRoots {
+		fmt.Fprintf(&b, "  %s\n", root)
+	}
+
+	b.WriteString("Read-only:\n")
+	if len(readOnly) == 0 {
+		b.WriteString("  (none)\n")
+	}
+	for _, root := range readOnly {
+		fmt.Fprintf(&b, "  %s\n", root)
+	}
+
+	fmt.Fprintf(&b, "\nNote: %s itself (%s) is always denied for write access, regardless of the rules above.\n", AccessFileName, a.denyPath)
+
+	return b.String()
+}
+
 // canonicalizeRoot resolves a FILES_RW_ACCESS rule's path to a canonical
 // absolute path. A r: root must exist; a w: root may not exist yet, in which case
 // its existing ancestor directory is canonicalized.

@@ -532,3 +532,23 @@ which turns got archived and what they were summarized into, not just a
 count-based guess. Worth doing once someone actually needs to trace
 through a compaction, not before.
 
+## `Access.Resolve` and `Access.OpenFile` disagree on whether reading `FILES_RW_ACCESS` itself is always allowed
+
+Found while building D42 (`files-rw access`), confirmed live. `Resolve`
+(`pkg/filesrw/access.go`) has an early bypass - if the target path equals
+`FILES_RW_ACCESS`'s own canonical path, reads are always allowed
+regardless of root membership, only writes are denied. `OpenFile` doesn't
+have that bypass in the same place - it checks root membership *first*,
+and only reaches its own denyFileInfo special-case (which permits reads)
+if that check already passed. Since every actual read-path operation in
+`ops.go` (`ReadFile`, `TailFile`, `SearchScratchpad`, etc.) goes through
+`OpenFile`, not `Resolve`, the "reading `FILES_RW_ACCESS` is always
+allowed" promise `Resolve`'s own doc comment implies doesn't actually
+hold for `files-rw read FILES_RW_ACCESS` in practice - confirmed with a
+live repro (`w:repo` as the only rule, `FILES_RW_ACCESS` sitting in the
+CWD - `files-rw read FILES_RW_ACCESS` fails with "not covered by any r:
+rule"). Not blocking D42 (that command reads the already-parsed `Access`
+struct in memory instead of going through this path at all), but worth
+deciding whether `OpenFile` should get the same early bypass `Resolve`
+has, or whether `Resolve`'s bypass is the one that's actually wrong.
+

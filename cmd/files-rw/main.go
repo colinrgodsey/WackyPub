@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/colinrgodsey/WackyPub/pkg/filesrw"
+	"github.com/colinrgodsey/wackypub/pkg/filesrw"
 )
 
 var (
@@ -26,9 +26,9 @@ var (
 
 var rootCmd = &cobra.Command{
 	Use:   "files-rw",
-	Short: "Per-directory allowed file read/write/edit/patch/copy/move/delete/list/tail/append tool for AI agents",
+	Short: "Per-directory allowed file read/write/edit/patch/copy/move/delete/list/tail/append/access tool for AI agents",
 	Long: `files-rw provides an explicit, per-directory-scoped file manipulation tool suite
-(read, write, edit, patch, copy, move, delete, list, tail, append) for AI agents, gated by a FILES_RW_ACCESS allowlist file in the current working directory.
+(read, write, edit, patch, copy, move, delete, list, tail, append, access) for AI agents, gated by a FILES_RW_ACCESS allowlist file in the current working directory. Run "files-rw access" to see what's actually granted before guessing.
 
 There is no separate directory-creation command: "write" and "append" both create any missing parent directories automatically, so creating a file inside a not-yet-existing folder creates the folder as a side effect.`,
 	SilenceUsage: true,
@@ -203,6 +203,25 @@ var listCmd = &cobra.Command{
 	},
 }
 
+var accessCmd = &cobra.Command{
+	Use:   "access",
+	Short: "Show what this directory's FILES_RW_ACCESS actually grants",
+	Long:  "Reports the read-write and read-only roots parsed from FILES_RW_ACCESS in the current working directory, according to D42. Useful before guessing at read/write calls to find out what's actually allowed.",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get working directory: %w", err)
+		}
+		access, err := filesrw.LoadAccess(cwd)
+		if err != nil {
+			return err
+		}
+		fmt.Print(access.Summary())
+		return nil
+	},
+}
+
 var (
 	tailLines   int
 	tailNumbers bool
@@ -279,6 +298,7 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(tailCmd)
 	rootCmd.AddCommand(appendCmd)
+	rootCmd.AddCommand(accessCmd)
 }
 
 func main() {

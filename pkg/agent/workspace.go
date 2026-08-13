@@ -56,6 +56,24 @@ func looksLikeAgentDir(agentDir string) bool {
 	return false
 }
 
+// CurrentAgentIDFromCWD returns the agent ID whose directory the current working
+// directory IS - not contains, not a subdirectory of - and whether one was detected
+// at all, according to D41. Same looksLikeAgentDir + filepath.Base pattern
+// ValidateAgentTarget already uses for its own sendingAgentID computation, applied
+// directly rather than via an upward walk: run_command always sets a spawned tool's
+// cmd.Dir to the calling agent's directory exactly, never a subdirectory of it, so
+// there's no case in the actual call path a direct check misses.
+func CurrentAgentIDFromCWD() (string, bool) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	if looksLikeAgentDir(cwd) {
+		return filepath.Base(cwd), true
+	}
+	return "", false
+}
+
 // pathExists reports whether path exists, without following a symlink (a
 // broken symlink still counts as present for signaling purposes).
 func pathExists(path string) bool {

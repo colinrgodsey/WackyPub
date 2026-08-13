@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	adkAgent "github.com/colinrgodsey/WackyPub/pkg/agent"
+	adkAgent "github.com/colinrgodsey/wackypub/pkg/agent"
 )
 
 var (
@@ -32,6 +32,9 @@ Flags:
                             4: Raw JSONL (dumps raw commit messages & A2A payloads as-is)`,
 	Args: cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := refuseIfAgentContext("wackypub trace"); err != nil {
+			return err
+		}
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
 			return err

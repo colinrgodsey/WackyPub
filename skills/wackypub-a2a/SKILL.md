@@ -1,7 +1,7 @@
 ---
 name: wackypub-a2a
 description: Guide for using the wackypub CLI for agent-to-agent (A2A) communications, command discovery, and inter-agent calling.
-always_load: false
+always_load: true
 ---
 # WackyPub AI A2A Communication & CLI Guide
 
@@ -45,7 +45,7 @@ wackypub agent strip-signatures --help
 - **Positional Agent Dispatch**: Both `wackypub agent <cmd> <agent_id> [args...]` and `wackypub agent <agent_id> <cmd> [args...]` (agent ID first) are supported.
 - **Flag Ordering Caveat**: Flags do *not* work with the agent-id-first ordering above — not just `--help`, *any* subcommand-specific flag (`--message`, `--skip-lines`, `--regex`, etc.). `wackypub agent prompt --help` and `wackypub agent <agent_id> add --message "..."` work; `wackypub agent <agent_id> prompt --help` and `wackypub agent <agent_id> add --message "..."` (agent ID before the subcommand) fail with `unknown flag`, because the outer `agent` command's own flag parsing runs before the agent-id-first form ever dispatches to the subcommand's `RunE`. If a command takes a flag, put the subcommand name directly after `agent`, agent ID after that: `wackypub agent <cmd> <agent_id> [flags]`. Positional-only calls (no flags) work fine in either order.
 - **Workspace Discovery (`--ws`)**: Specify `--ws <path>` to target a workspace directory containing `WACKYPUB_ROOT`. If omitted, `wackypub` automatically walks up from CWD to find the nearest workspace root.
-- **Cross-Agent Access is Gated**: An agent can only target other agents listed in its own `WACKYPUB_ALLOWED_AGENTS` file (default is deny-all if that file doesn't exist). Attempting to reach an unauthorized agent — including yourself, unless explicitly listed — fails with a clear authorization error.
+- **Cross-Agent Access is Gated**: An agent can only target other agents listed in its own `WACKYPUB_ALLOWED_AGENTS` file (default is deny-all if that file doesn't exist). Attempting to reach an unauthorized agent — including yourself, unless explicitly listed — fails with a clear authorization error. To check who you're allowed to talk to, run `wackypub workspace` (no arguments) from your own directory rather than reading the file directly.
 
 ### 4. Inter-Agent Communication (A2A)
 - Simple request->response flows between agents should use `agent prompt`:

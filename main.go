@@ -3,7 +3,7 @@ package main
 import (
 	_ "embed"
 
-	"github.com/colinrgodsey/WackyPub/cmd"
+	"github.com/colinrgodsey/wackypub/cmd"
 )
 
 //go:embed skills/wackypub-a2a/SKILL.md

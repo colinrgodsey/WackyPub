@@ -47,9 +47,7 @@ Example prompts (tested on Haiku and Gemma 4 A4B):
 Already driving this from a coding agent (Claude Code, or whatever you're using to read this)? Skip the container - install the binary and let your agent bootstrap the rest itself.
 
 ```bash
-go install github.com/colinrgodsey/WackyPub@latest
-# go install names the binary after the repo (WackyPub) - rename it to match every command in this doc
-mv "$(go env GOBIN)/WackyPub" "$(go env GOBIN)/wackypub" 2>/dev/null || mv "$(go env GOPATH)/bin/WackyPub" "$(go env GOPATH)/bin/wackypub"
+go install github.com/colinrgodsey/wackypub@latest
 ```
 
 Then hand your agent a prompt along these lines:
@@ -99,7 +97,7 @@ That's the whole point of the bundled skills (D34, D40): the CLI teaches your ag
 
 Security testing here is agent-driven, not just aspirational documentation. `wackypub` orchestrates a coordinator-and-worker swarm of its own agents to red-team a target tool's actual live build — propose → dedupe → execute → report rounds against a real binary running inside a disposable Docker container ([`docs/SWARM_TESTING.md`](docs/SWARM_TESTING.md)), not a hypothetical threat model on paper. It's also a legitimate standalone use case for `wackypub` itself, distinct from roleplay or orchestration - point the swarm at anything with a CLI surface, including `wackypub`'s own companion tools.
 
-It's already found real things. A swarm run caught a critical cross-agent hardlink bypass in `files-rw` (a companion filesystem access-control tool) - one agent could read another's supposedly walled-off files by hardlinking to them first. Found, documented, fixed, and re-verified against the fix - not a paper finding. The original report is preserved at the commit where it was written, before the fix it drove made the report itself obsolete: [`docs/files-rw-security-test.md`](https://github.com/colinrgodsey/WackyPub/blob/3b65cdcd6b3322c540e4b0950de5232408f4e711/docs/files-rw-security-test.md).
+It's already found real things. A swarm run caught a critical cross-agent hardlink bypass in `files-rw` (a companion filesystem access-control tool) - one agent could read another's supposedly walled-off files by hardlinking to them first. Found, documented, fixed, and re-verified against the fix - not a paper finding. The original report is preserved at the commit where it was written, before the fix it drove made the report itself obsolete: [`docs/files-rw-security-test.md`](https://github.com/colinrgodsey/wackypub/blob/3b65cdcd6b3322c540e4b0950de5232408f4e711/docs/files-rw-security-test.md).
 
 Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURITY_TESTING.md`](.agents/SECURITY_TESTING.md)): untested, tested-and-clean, or tested-with-a-finding. A tool's state resets to untested the instant its enforcement logic changes, so a passing grade can never silently go stale, and a finding stays on record - report and all - even after it's fixed, superseded by a dated follow-up rather than quietly erased.
 

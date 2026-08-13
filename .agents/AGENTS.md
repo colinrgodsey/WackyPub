@@ -53,7 +53,7 @@ calls without a subprocess at all. Keeping the CLI layer thin and the SDK
 method as the single source of behavior is what lets both callers share the
 same implementation and documentation without duplicating either.
 
-**Module**: `github.com/colinrgodsey/WackyPub` (see `go.mod`)
+**Module**: `github.com/colinrgodsey/wackypub` (see `go.mod`)
 **Go Version**: 1.25.7
 **ADK Version**: `google.golang.org/adk/v2` v2.0.0
 

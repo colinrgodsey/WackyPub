@@ -7,7 +7,7 @@ always_load: true
 
 WackyPub has no structural way for a receiving agent to know whether a message came from a human or from another agent - every incoming turn looks identical either way. The only fix is a convention: self-report.
 
-**Whenever you send a message to another agent** (e.g. via `wackypub agent <id> prompt "..."`), start the message text with a short preamble announcing your own agent ID, then continue with the actual content:
+**Whenever you send a message to another agent** (e.g. via `wackypub agent <id> prompt "..."` or `wackypub agent <id> add "..."`), start the message text with a short preamble announcing your own agent ID, then continue with the actual content:
 
 ```
 [Message from agent: <your-own-agent-id>]

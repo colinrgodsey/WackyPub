@@ -160,7 +160,7 @@ CLI-only business logic is allowed to live in `cmd/agent.go`.
 primary consumers are agent platforms shelling out to `wackypub` as a single
 command per call (see D13) - they only ever see the CLI surface. Separately,
 a Go-native agent platform or other implementer can `import
-"github.com/colinrgodsey/WackyPub/pkg/agent"` and call `AgentSDK` directly,
+"github.com/colinrgodsey/wackypub/pkg/agent"` and call `AgentSDK` directly,
 skipping the CLI entirely. Keeping the SDK method as the single place
 behavior and documentation live means both callers get the same behavior
 for free, and neither one requires re-deriving or duplicating what already
@@ -855,6 +855,32 @@ Implemented in `cmd/root.go` and `pkg/agent/skill.go` (factored `ParseSkillFile`
 **Agent-facing hint added to the command's own `Short` description**, since that's the line that actually shows up in `wackypub --help`'s "Available Commands" listing - something to the effect of "if you're an agent, you'll want to load one of these" - so an agent doing cold `--help`-driven discovery (the CLI's own stated design constraint, see Philosophy) has a reason to actually run `wackypub skill` rather than skip past it as a human-only utility command.
 
 **Why**: two ways to do the same thing is exactly what D34 shouldn't have shipped given this project's own repeated stance against redundant surfaces, and silently defaulting a no-argument invocation to one specific skill hides that a choice is being made at all - listing makes the choice explicit instead of guessing on the caller's behalf.
+
+## D41: `wackypub workspace` self-identifies from CWD; `trace`/`workspace snapshot`/`tag`/`push` blocked from agent context
+
+Implemented in `pkg/agent/workspace.go` and `cmd/workspace.go`/`cmd/trace.go`. Verified live - identity display only fires when CWD is exactly an agent's own directory, all four commands correctly refused with a clear message from that context, unaffected from the workspace root, `init-git` confirmed still unblocked.
+
+**The problem, confirmed by tracing the code, not assumed**: an agent has no structural way to know its own ID or who it's allowed to call. There's no env var, no macro, nothing - a system prompt only says "you are agent bob" if whoever wrote that agent's `AGENTS.md` typed it by hand, and `WACKYPUB_ALLOWED_AGENTS` is a plain file the agent has no built-in way to see (would need `files-rw`/`bash` access to that specific file even to try). This is exactly the kind of thing that drifts across copy-pasted `AGENTS.md` files.
+
+**Fix: extend `wackypub workspace` (the bare, no-argument form) rather than add a macro or new tool.** Agents already gravitate to running it cold at the start of a session to orient themselves - so when CWD is detected as being an agent's own directory, prepend an identity section ("You are agent X. Agents you can talk to: ...") to the existing workspace overview, rather than inventing a new command or a `AGENTS.md` macro for something the CLI can already tell you if it looks.
+
+**Detection method**: reuses the exact pattern D16's `ValidateAgentTarget` already established for the same purpose (its own `sendingAgentID` computation) - `looksLikeAgentDir(cwd)` true means CWD *is* (not contains, not is a subdirectory of) an agent's directory, and `filepath.Base(cwd)` is that agent's ID by convention. Factored into a new shared `CurrentAgentIDFromCWD()` helper (`pkg/agent/workspace.go`) rather than duplicated. Deliberately a direct check, not an upward walk from CWD toward the workspace root the way `ValidateAgentTarget`'s authorization check does - matches `run_command`'s own behavior exactly (`executeTool` always sets `cmd.Dir` to the calling agent's directory precisely, never a subdirectory of it), so there's no case in the actual call path this needs to handle that a direct check misses.
+
+**This resolves the open question in TODOS.md** ("does `WACKYPUB_ALLOWED_AGENTS` restrict CWD-based invocations in general, or only actual tool-call context") in the sense that matters here, though it's a different application, not the same question answered: that TODO was about whether *authorization* should be CWD-scoped (unchanged by this decision - D16's existing behavior stands). This decision uses the same CWD-is-an-agent-dir signal for two new, different purposes - self-identification (informational) and blocking a specific set of commands (below) - not for authorization itself.
+
+**`trace`, `workspace snapshot`, `workspace tag`, and `workspace push` all blanket-refuse when `CurrentAgentIDFromCWD()` detects an agent context.** These are operator/diagnostic and cross-workspace-coordination commands, not something an agent driving its own turn should be invoking on itself - `trace` in particular is a debugging tool for a human or external process to inspect causal history *across* agents, not something meaningful for a single agent to run on itself mid-turn. No override flag, no exception - if the goal is to run one of these against a specific agent's data, do it from the workspace root (or anywhere that isn't literally that agent's own directory), which remains completely unaffected. `workspace init-git` is deliberately *not* in this list - initializing git tracking on one's own directory is a reasonable thing for an agent to do for itself, unlike the other four.
+
+**Why**: the identity gap was a real, live-reported problem, not speculative, and the fix reuses two things that already exist (`wackypub workspace`'s role as the "orient yourself" entry point, and D16's own CWD-detection pattern) rather than adding a third mechanism (a macro system) on top of an already-growing set of ways an agent learns about its environment. Blocking the four operator commands from the same detected context closes off a surface that was never intentionally exposed to begin with - nothing ever decided agents should be able to run `trace`/`snapshot`/`tag`/`push` on themselves, it was just never prevented.
+
+## D42: `files-rw access` - report an agent's own granted permissions
+
+Implemented in `pkg/filesrw/access.go` (`Access.Summary()`) and `cmd/files-rw/main.go`. Verified live - correct read-write/read-only split, dedup (a write root does not also list under read-only), graceful "(none)" when a list is empty. Same family of problem as D41 (self-orientation), different tool: agents were getting confused about what `files-rw` actually lets them touch, with no way to ask other than trial and error against `read`/`write` and reading the error message.
+
+**New `files-rw access` command, no arguments.** Reads `FILES_RW_ACCESS` via the same `LoadAccess` every other `files-rw` command already calls, then reports what it parsed: read-write roots, read-only roots (the two are currently conflated in `Access.readableRoots`, a superset of `writableRoots` - the command reports them as two clearly separate lists, not the internal representation's shape), and a note that `FILES_RW_ACCESS`'s own path is always denied for writes regardless of the rules. Requires exporting a `Summary()` (or equivalent) method on `Access`, since its fields are all unexported today.
+
+**Deliberately does not read `FILES_RW_ACCESS` as a file through the normal access-check path.** Confirmed live while designing this: `files-rw read FILES_RW_ACCESS` already fails today whenever the granted root is a subdirectory rather than the CWD itself (`Resolve` has a bypass for reading `FILES_RW_ACCESS` itself, `OpenFile` - what every real read operation actually goes through - doesn't reach that bypass unless root-membership already passed). Logged as its own TODO rather than fixed here, since it's a separate, pre-existing inconsistency. `files-rw access` sidesteps it entirely by formatting the struct `LoadAccess` already parsed into memory, rather than re-reading the file as text through the same path that has the gap.
+
+**Why**: an agent that can't answer "what am I actually allowed to touch" without trial-and-error against real read/write attempts is exactly the kind of self-orientation gap D41 just fixed for agent identity - same shape of problem, same fix pattern (make the tool answer directly instead of making the agent guess), applied to `files-rw` instead of `wackypub` itself.
 
 
 

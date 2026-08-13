@@ -298,7 +298,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/colinrgodsey/WackyPub/pkg/agent"
+	"github.com/colinrgodsey/wackypub/pkg/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/genai"
 )
