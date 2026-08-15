@@ -564,37 +564,3 @@ rule"). Not blocking D42 (that command reads the already-parsed `Access`
 struct in memory instead of going through this path at all), but worth
 deciding whether `OpenFile` should get the same early bypass `Resolve`
 has, or whether `Resolve`'s bypass is the one that's actually wrong.
-
-
-## Binary/image `get_scratchpad` reads should redirect to the next turn instead of just rejecting (D48)
-
-D48 makes `get_scratchpad`/`search_scratchpad` reject `.dat` (binary)
-entries outright - correct as far as it goes, since Chat Completions'
-tool-role message content is text-only regardless of the underlying
-model's own multimodal capability (confirmed live against
-`achetronic/adk-utils-go`'s OpenAI dialect: `openai.ToolMessage(string(...), id)`,
-no multipart slot). But a flat rejection is a dead end for a real case: an
-agent that captured an image via some other tool (e.g. a chart-generator)
-mid-loop has no way to ever look at what it made.
-
-Better: instead of rejecting, acknowledge ("scratchpad content is an
-image, it will be available to you on your next turn"), queue the image
-content, and force the *current* tool loop to terminate early so the next
-`generate` call picks it up as a fresh top-level user turn - where D47
-confirmed multipart image content in a normal user turn does work.
-
-Needs the tool loop to stop immediately when this happens, not just wait
-for the model to stop on its own. The mechanism already exists for a
-different trigger: `BuildADKAgentWithConfig`'s `BeforeModelCallback`
-(`pkg/agent/adk_agent.go`) short-circuits with a canned
-`model.LLMResponse` instead of calling the real model once
-`modelCalls > maxToolTurns+1` (the max-tool-turns early-stop case). This
-would reuse the same shape - return a canned response, don't call the
-model - triggered by "an image was just queued" instead of a call-count
-threshold, then append the queued image content to `session.jsonl` so it
-shows up on the next real `generate`.
-
-Deliberately not solved as part of D48 - it's a real, separate design
-pass (the early-termination trigger plumbing, plus deciding where/how
-the queued content gets appended and merged), not something to bolt onto
-an already-large scratchpad format change.

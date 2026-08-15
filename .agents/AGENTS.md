@@ -169,19 +169,24 @@ Any shared state, file access, session mutation, tool invocation, or ID generati
 
 **Why**: Unprotected file read-modify-write loops, shared map mutations without mutex locks, non-atomic file persistence, or assumptions about sequential tool execution introduce subtle race conditions, corrupted state, or lost updates under concurrent access. Always design state mutations and file access to be concurrency-safe.
 
-### No magic strings - a string literal used more than once becomes a named constant
+### No magic strings or magic constants - literals and values with domain meaning become named constants
 
-If a string literal appears more than once - a filename (`"runtime.json"`,
-`"AGENTS.md"`), a role (`"user"`, `"model"`), an env var name
-(`"WACKYPUB_CALL_CHAIN"`), a metadata key, a flag name - it becomes a
+If a string literal or numeric value with domain meaning appears more than once
+or carries semantic significance - a filename (`"runtime.json"`, `"AGENTS.md"`),
+a role (`"user"`, `"model"`), an env var name (`"WACKYPUB_CALL_CHAIN"`), a
+metadata key, a flag name, a buffer/header size (`262` bytes for media
+detection, `24` bytes for binary prefix checks), or a threshold (`4000` byte
+scratchpad redirection cap, `300` max scratchpad entries) - it becomes a
 package-level `const` (or an exported one, if other packages need it too),
-not a second copy of the literal typed out again.
+not raw literals typed out inline.
 
 **Why**: a typo in a repeated string literal compiles fine and fails at
 runtime, sometimes silently (a mistyped role string just doesn't match
 anything, a mistyped filename just doesn't get found); a typo in an
-identifier fails to build. A named constant also makes the value renameable
-from one place instead of a grep-and-hope across the codebase.
+identifier fails to build. Magic numbers obscure the meaning of arbitrary-looking
+slices or buffer allocations and make tuning/updating behavior across the
+codebase error-prone. A named constant makes the value self-documenting and
+renameable/tunable from one place.
 
 This applies going forward; existing code has known instances of this not
 yet being followed (e.g. `"user"`/`"model"` role strings, `"AGENTS.md"`/

@@ -35,7 +35,9 @@ type GetScratchpadArgs struct {
 }
 
 type GetScratchpadResult struct {
-	Output string `json:"output"`
+	Output       string `json:"output"`
+	Deferred     bool   `json:"deferred,omitempty"`
+	ScratchpadID string `json:"scratchpad_id,omitempty"`
 }
 
 type ListScratchpadsArgs struct{}
@@ -124,8 +126,33 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 2. get_scratchpad
 	getTool, err := functiontool.New(functiontool.Config{
 		Name:        "get_scratchpad",
-		Description: "Retrieve stored text from a scratchpad entry by ID, optionally paginated by line range.",
+		Description: "Retrieve stored text from a scratchpad entry by ID, optionally paginated by line range. If the entry contains an image and image support is enabled, it is queued for your next turn.",
 	}, func(ctx agent.Context, args GetScratchpadArgs) (GetScratchpadResult, error) {
+		filePath, _, isBinary, err := findScratchpadFile(agentDir, args.ID)
+		if err != nil {
+			return GetScratchpadResult{}, err
+		}
+
+		if isBinary {
+			header, err := ReadMediaHeader(filePath)
+			if err != nil {
+				return GetScratchpadResult{}, err
+			}
+			_, mimeType := DetectMediaType(header)
+
+			// Gating: only defer if image support is enabled on runtime config
+			runtimeCfg, _ := LoadRuntimeConfig(agentDir)
+			if runtimeCfg != nil && runtimeCfg.MaxImageDimension > 0 && strings.HasPrefix(mimeType, "image/") {
+				return GetScratchpadResult{
+					Output:       fmt.Sprintf("This scratchpad contains an image (%s) that will be available in your next turn.", mimeType),
+					Deferred:     true,
+					ScratchpadID: args.ID,
+				}, nil
+			}
+
+			return GetScratchpadResult{}, fmt.Errorf("scratchpad entry %q is binary data (%s) and cannot be read as text", args.ID, mimeType)
+		}
+
 		out, err := GetScratchpad(agentDir, args.ID, args.SkipLines, args.NumLines)
 		if err != nil {
 			return GetScratchpadResult{}, err
@@ -608,11 +635,26 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 	}
 
 	var finalResponse string
+	var deferredScratchpadIDs []string
 	for event, err := range r.Run(ctx, "user", fa.AgentID, nil, agent.RunConfig{}) {
 		if err != nil {
 			return "", fmt.Errorf("runner execution error: %w", err)
 		}
 		if event != nil {
+			if event.Content != nil {
+				for _, p := range event.Content.Parts {
+					if p != nil && p.FunctionResponse != nil && p.FunctionResponse.Name == "get_scratchpad" {
+						respMap := p.FunctionResponse.Response
+						if respMap != nil {
+							if def, ok := respMap["deferred"].(bool); ok && def {
+								if spID, ok := respMap["scratchpad_id"].(string); ok && spID != "" {
+									deferredScratchpadIDs = append(deferredScratchpadIDs, spID)
+								}
+							}
+						}
+					}
+				}
+			}
 			text := ExtractTextFromEvent(event)
 			if text != "" {
 				finalResponse = text
@@ -622,6 +664,38 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 
 	if finalResponse == "" {
 		return "", fmt.Errorf("received empty response from agent")
+	}
+
+	// Append deferred image user turns per D49, gated by maxImageDimension
+	if fa.RuntimeConfig != nil && fa.RuntimeConfig.MaxImageDimension > 0 {
+		for _, spID := range deferredScratchpadIDs {
+			filePath, _, isBinary, err := findScratchpadFile(fa.AgentDir, spID)
+			if err != nil || !isBinary {
+				continue
+			}
+			imgData, err := os.ReadFile(filePath)
+			if err != nil {
+				continue
+			}
+			jpegBytes, mimeType, err := NormalizeAndResizeImage(bytes.NewReader(imgData), fa.RuntimeConfig.MaxImageDimension)
+			if err != nil {
+				continue
+			}
+			turn := &genai.Content{
+				Role: "user",
+				Parts: []*genai.Part{
+					{Text: fmt.Sprintf("<IMAGE>The following image is stored in scratchpad '%s'</IMAGE>", spID)},
+					{
+						InlineData: &genai.Blob{
+							MIMEType: mimeType,
+							Data:     jpegBytes,
+						},
+					},
+				},
+			}
+			_ = AppendSessionContent(fa.AgentDir, turn)
+			_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "user (deferred image)")
+		}
 	}
 
 	_ = CommitWorkspaceEvent(wsDir, fa.AgentID, "assistant")

@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,6 +22,8 @@ const (
 	MaxScratchpadEntries      = 300
 	MaxExpandedArgBytes       = 500000
 	ScratchpadOutputThreshold = 4000
+	MediaDetectionHeaderBytes = 262
+	BinaryCheckPrefixBytes    = 24
 )
 
 type ScratchpadEntry struct {
@@ -42,11 +45,30 @@ type ScratchpadItem struct {
 	MIMEType  string `json:"mime_type,omitempty"`
 }
 
-// IsBinaryContent checks the first min(24, len(data)) bytes for any byte <= 8 (NUL, etc.) according to D48.
+// ReadMediaHeader reads up to MediaDetectionHeaderBytes from filePath.
+// Closes file properly and verifies errors from both read and close without swallowing.
+func ReadMediaHeader(filePath string) ([]byte, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open media file: %w", err)
+	}
+	header := make([]byte, MediaDetectionHeaderBytes)
+	n, readErr := f.Read(header)
+	closeErr := f.Close()
+	if readErr != nil && readErr != io.EOF {
+		return nil, fmt.Errorf("failed to read media header: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("failed to close media file: %w", closeErr)
+	}
+	return header[:n], nil
+}
+
+// IsBinaryContent checks the first min(BinaryCheckPrefixBytes, len(data)) bytes for any byte <= 8 (NUL, etc.) according to D48.
 func IsBinaryContent(data []byte) bool {
 	checkLen := len(data)
-	if checkLen > 24 {
-		checkLen = 24
+	if checkLen > BinaryCheckPrefixBytes {
+		checkLen = BinaryCheckPrefixBytes
 	}
 	for i := 0; i < checkLen; i++ {
 		if data[i] <= 8 {
@@ -222,11 +244,14 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 	}
 
 	if _, err := file.WriteString(expandedText); err != nil {
-		file.Close()
-		os.Remove(filePath)
+		_ = file.Close()
+		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to write scratchpad content: %w", err)
 	}
-	file.Close()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(filePath)
+		return nil, fmt.Errorf("failed to close scratchpad file: %w", err)
+	}
 
 	EvictOldestScratchpad(spDir, MaxScratchpadEntries)
 
@@ -282,11 +307,14 @@ func CreateBinaryScratchpad(agentDir string, data []byte, createdBy string, mime
 	}
 
 	if _, err := file.Write(data); err != nil {
-		file.Close()
-		os.Remove(filePath)
+		_ = file.Close()
+		_ = os.Remove(filePath)
 		return nil, fmt.Errorf("failed to write binary scratchpad content: %w", err)
 	}
-	file.Close()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(filePath)
+		return nil, fmt.Errorf("failed to close binary scratchpad file: %w", err)
+	}
 
 	EvictOldestScratchpad(spDir, MaxScratchpadEntries)
 
@@ -332,13 +360,10 @@ func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (s
 	}
 
 	if isBinary {
-		dataHeader := make([]byte, 262)
-		f, err := os.Open(filePath)
 		mimeType := "application/octet-stream"
+		header, err := ReadMediaHeader(filePath)
 		if err == nil {
-			n, _ := f.Read(dataHeader)
-			f.Close()
-			_, mimeType = DetectMediaType(dataHeader[:n])
+			_, mimeType = DetectMediaType(header)
 		}
 		return "", fmt.Errorf("scratchpad entry %q is binary data (%s) and cannot be read as text", id, mimeType)
 	}
@@ -404,12 +429,9 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 		mimeType := "text/plain"
 		if isBinary {
 			mimeType = "application/octet-stream"
-			f, err := os.Open(filepath.Join(spDir, baseName))
+			header, err := ReadMediaHeader(filepath.Join(spDir, baseName))
 			if err == nil {
-				header := make([]byte, 262)
-				n, _ := f.Read(header)
-				f.Close()
-				_, mimeType = DetectMediaType(header[:n])
+				_, mimeType = DetectMediaType(header)
 			}
 		}
 

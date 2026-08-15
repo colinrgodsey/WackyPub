@@ -3,11 +3,16 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"iter"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/tool"
 	"google.golang.org/genai"
 )
 
@@ -263,5 +268,204 @@ func TestScratchpad_UnifiedIDNamespace(t *testing.T) {
 		if it.ID == sharedID {
 			t.Fatalf("found orphaned entry with ID %q after DeleteScratchpad", sharedID)
 		}
+	}
+}
+
+type getScratchpadTestModel struct {
+	id string
+}
+
+func (m *getScratchpadTestModel) Name() string { return "get-scratchpad-test-model" }
+
+func (m *getScratchpadTestModel) GenerateContent(ctx context.Context, req *model.LLMRequest, stream bool) iter.Seq2[*model.LLMResponse, error] {
+	return func(yield func(*model.LLMResponse, error) bool) {
+		res := &model.LLMResponse{
+			Content: &genai.Content{
+				Role: "model",
+				Parts: []*genai.Part{
+					{
+						FunctionCall: &genai.FunctionCall{
+							Name: "get_scratchpad",
+							Args: map[string]any{
+								"id": m.id,
+							},
+						},
+					},
+				},
+			},
+		}
+		yield(res, nil)
+	}
+}
+
+func TestD49_DeferredImageScratchpad(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt Bob"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(`{"model":"test-model","endpoint":"http://localhost:1234/v1","maxImageDimension":400}`), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// 1. Create a binary PNG scratchpad
+	pngData := createTestImage(100, 100, false)
+	imgEntry, err := CreateBinaryScratchpad(agentDir, pngData, "test", "image/png")
+	if err != nil {
+		t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+	}
+
+	// 2. Set up FolderAgent with getScratchpadTestModel
+	fa, err := LoadFolderAgent(wsDir, "bob", 5)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	fa.Model = &getScratchpadTestModel{id: imgEntry.ID}
+
+	toolMap, _, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+
+	toolsList := []tool.Tool{toolMap["get_scratchpad"]}
+	fa.ADKAgent, err = BuildADKAgentWithConfig("bob", fa.SystemPrompt, 5, fa.RuntimeConfig, fa.Model, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
+	}
+
+	// Add initial user turn to session.jsonl
+	uMsg := genai.NewContentFromText("please inspect the image in scratchpad", "user")
+	if err := AppendSessionContent(agentDir, uMsg); err != nil {
+		t.Fatalf("AppendSessionContent failed: %v", err)
+	}
+
+	// 3. GenerateTurn executes tool loop, defers image, and short-circuits
+	respText, err := fa.GenerateTurn(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateTurn failed: %v", err)
+	}
+
+	if !strings.Contains(respText, "queued") || !strings.Contains(respText, imgEntry.ID) {
+		t.Errorf("expected response to mention queued image ID %q, got: %s", imgEntry.ID, respText)
+	}
+
+	// 4. Verify session.jsonl contains the deferred image turn at the very end
+	turns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	if len(turns) < 3 {
+		t.Fatalf("expected at least 3 turns in session.jsonl, got %d", len(turns))
+	}
+
+	lastTurn := turns[len(turns)-1]
+	if lastTurn.Role != "user" {
+		t.Errorf("expected last turn in session.jsonl to be role 'user', got %q", lastTurn.Role)
+	}
+
+	if len(lastTurn.Parts) != 2 {
+		t.Fatalf("expected last turn to have 2 parts (label text + image), got %d", len(lastTurn.Parts))
+	}
+
+	expectedLabel := fmt.Sprintf("<IMAGE>The following image is stored in scratchpad '%s'</IMAGE>", imgEntry.ID)
+	if lastTurn.Parts[0].Text != expectedLabel {
+		t.Errorf("expected part[0].Text %q, got %q", expectedLabel, lastTurn.Parts[0].Text)
+	}
+
+	if lastTurn.Parts[1].InlineData == nil || lastTurn.Parts[1].InlineData.MIMEType != "image/jpeg" {
+		t.Errorf("expected part[1].InlineData with image/jpeg, got %+v", lastTurn.Parts[1].InlineData)
+	}
+
+	// 5. Test hasDeferredScratchpadResponse helper directly
+	hasDef, ids := hasDeferredScratchpadResponse([]*genai.Content{
+		{
+			Role: "tool",
+			Parts: []*genai.Part{
+				{
+					FunctionResponse: &genai.FunctionResponse{
+						Name: "get_scratchpad",
+						Response: map[string]any{
+							"deferred":      true,
+							"scratchpad_id": "xyz9",
+						},
+					},
+				},
+			},
+		},
+	})
+	if !hasDef || len(ids) != 1 || ids[0] != "xyz9" {
+		t.Errorf("hasDeferredScratchpadResponse failed: got hasDef=%v, ids=%v", hasDef, ids)
+	}
+
+	// 6. Test non-image binary rejection in get_scratchpad
+	binData := []byte{0x00, 0x01, 0x02, 0x03, 0x04}
+	binEntry, err := CreateBinaryScratchpad(agentDir, binData, "test", "application/octet-stream")
+	if err != nil {
+		t.Fatalf("CreateBinaryScratchpad failed: %v", err)
+	}
+
+	fa.Model = &getScratchpadTestModel{id: binEntry.ID}
+	fa.ADKAgent, err = BuildADKAgentWithConfig("bob", fa.SystemPrompt, 1, fa.RuntimeConfig, fa.Model, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
+	}
+
+	// Add a user turn so generate precondition holds
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("check binary", "user"))
+	_, _ = fa.GenerateTurn(context.Background())
+
+	turnsAfter, _ := ReadSessionTurns(agentDir)
+	// Check that tool response contains error message
+	foundError := false
+	for _, t := range turnsAfter {
+		for _, p := range t.Parts {
+			if p.FunctionResponse != nil && p.FunctionResponse.Name == "get_scratchpad" {
+				respJSON, _ := json.Marshal(p.FunctionResponse.Response)
+				if strings.Contains(string(respJSON), "cannot be read as text") {
+					foundError = true
+				}
+			}
+		}
+	}
+	if !foundError {
+		t.Errorf("expected tool response error for non-image binary scratchpad")
+	}
+
+	// 7. Test that when maxImageDimension is absent/disabled, get_scratchpad on an image rejects instead of deferring
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(`{"model":"test-model","endpoint":"http://localhost:1234/v1"}`), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+	faGated, err := LoadFolderAgent(wsDir, "bob", 1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	faGated.Model = &getScratchpadTestModel{id: imgEntry.ID}
+	faGated.ADKAgent, err = BuildADKAgentWithConfig("bob", faGated.SystemPrompt, 1, faGated.RuntimeConfig, faGated.Model, toolsList...)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
+	}
+
+	_ = AppendSessionContent(agentDir, genai.NewContentFromText("check gated image", "user"))
+	_, _ = faGated.GenerateTurn(context.Background())
+
+	turnsGated, _ := ReadSessionTurns(agentDir)
+	foundGatedRejection := false
+	for _, t := range turnsGated {
+		for _, p := range t.Parts {
+			if p.FunctionResponse != nil && p.FunctionResponse.Name == "get_scratchpad" {
+				respJSON, _ := json.Marshal(p.FunctionResponse.Response)
+				if strings.Contains(string(respJSON), "cannot be read as text") {
+					foundGatedRejection = true
+				}
+			}
+		}
+	}
+	if !foundGatedRejection {
+		t.Errorf("expected get_scratchpad on image to reject when maxImageDimension is disabled")
 	}
 }

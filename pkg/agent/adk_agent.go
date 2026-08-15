@@ -130,6 +130,19 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 						req.Config.ThinkingConfig = thinkingConfig
 					}
 				}
+				// Check for deferred image response from get_scratchpad per D49
+				if hasDef, deferredIDs := hasDeferredScratchpadResponse(req.Contents); hasDef {
+					idList := strings.Join(deferredIDs, ", ")
+					return &model.LLMResponse{
+						Content: &genai.Content{
+							Role: "model",
+							Parts: []*genai.Part{
+								{Text: fmt.Sprintf("Image from scratchpad %s has been queued. It will be available in your next turn. Send another message to continue.", idList)},
+							},
+						},
+					}, nil
+				}
+
 				// First model call is initial prompt; subsequent model calls are tool loop turns.
 				// Stop short rather than error: the caller (human or controlling agent) gets a
 				// clear, successful turn back with a hint to send another message to continue,
@@ -177,4 +190,32 @@ func ExtractTextFromEvent(event *session.Event) string {
 		}
 	}
 	return text
+}
+
+// hasDeferredScratchpadResponse inspects request contents to detect if the most recent turn
+// includes a get_scratchpad function response flagged with deferred: true per D49.
+func hasDeferredScratchpadResponse(contents []*genai.Content) (bool, []string) {
+	if len(contents) == 0 {
+		return false, nil
+	}
+	last := contents[len(contents)-1]
+	if last == nil {
+		return false, nil
+	}
+	var deferredIDs []string
+	hasDeferred := false
+	for _, p := range last.Parts {
+		if p != nil && p.FunctionResponse != nil && p.FunctionResponse.Name == "get_scratchpad" {
+			respMap := p.FunctionResponse.Response
+			if respMap != nil {
+				if def, ok := respMap["deferred"].(bool); ok && def {
+					hasDeferred = true
+					if spID, ok := respMap["scratchpad_id"].(string); ok && spID != "" {
+						deferredIDs = append(deferredIDs, spID)
+					}
+				}
+			}
+		}
+	}
+	return hasDeferred, deferredIDs
 }
