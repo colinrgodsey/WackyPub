@@ -108,6 +108,7 @@ Specifies the LLM provider configuration and session compaction parameters for t
 | `reasoningField` | `string` | Name of the provider's plain-text reasoning field, read on ingest and written on egress. Empty means `"reasoning_content"`. OpenRouter uses `"reasoning"` instead. |
 | `supportsReasoningDetails` | `bool` | Allows OpenRouter's structured `reasoning_details` block array (including encrypted/signed reasoning) to be replayed as history. Only safe with a **pinned** `model` — see [§7](#7-reasoning--thinking-support) for why `"auto"` routing breaks this. |
 | `extraBody` | `map[string]any` | Provider-specific fields merged into the root of every request body, for extensions Chat Completions doesn't define — e.g. `{"reasoning": {"effort": "high"}}` to request extended thinking from OpenRouter-routed models that don't emit it by default. |
+| `extraHeaders` | `map[string]string` | Overrides the default identifying HTTP headers sent on every request (`X-Title: WackyPub`, `HTTP-Referer: https://github.com/colinrgodsey/wackypub`, plus `X-OpenRouter-Title`/`X-OpenRouter-Categories` when the endpoint is detected as OpenRouter — together what stops a client from showing up as "unknown" on OpenRouter's dashboard/rankings). A key present here replaces the default of the same name; useful for anyone embedding wackypub under their own product name. `User-Agent` is not overridable this way — see DECISIONS.md D43. |
 
 ---
 

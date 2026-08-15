@@ -117,12 +117,14 @@ Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURI
 
 A few tools worth linking into `tools/` for a real workspace, not just the demo:
 
+- **[files-rw](#security)** (recommended) — our own file access/editing suite, gated by a per-directory allowlist. Standalone repo coming soon; see [Security](#security) above for its actual track record, not just a claim.
+- **`wackypub` itself** (recommended) — yes, really. Linking `wackypub` into an agent's own `tools/` is what makes agent-to-agent calling possible in the first place (see [Philosophy](#philosophy)) - not a special integration, just another executable an agent happens to invoke. Necessary for any workspace that wants real cross-agent orchestration, not optional the way the rest of this list is.
 - **[QMD](https://github.com/tobi/qmd)** — on-device search built by Tobi Lütke (Shopify), giving agents local RAG over Markdown, notes, and docs: BM25 keyword search, vector semantic search, and LLM re-ranking, all in one local binary.
 - **[ast-grep](https://github.com/ast-grep/ast-grep)** — structural code search and rewriting via AST matching instead of regex.
 - **[playwright-cli](https://github.com/microsoft/playwright-cli)** — a CLI-native wrapper around Playwright browser automation, built specifically for terminal coding agents.
 - **[mcporter](https://github.com/openclaw/mcporter)** — auto-discovers and invokes MCP tools directly from the command line. Since `tools/` will run anything that's an executable, this means the entire MCP ecosystem becomes usable here with zero wackypub-side integration work.
-- **[files-rw](#security)** (recommended) — our own file access/editing suite, gated by a per-directory allowlist. Standalone repo coming soon; see [Security](#security) above for its actual track record, not just a claim.
-- **`wackypub` itself** (recommended) — yes, really. Linking `wackypub` into an agent's own `tools/` is what makes agent-to-agent calling possible in the first place (see [Philosophy](#philosophy)) - not a special integration, just another executable an agent happens to invoke. Necessary for any workspace that wants real cross-agent orchestration, not optional the way the rest of this list is.
+
+All tools execute from the agent's own workspace directory as the CWD.
 
 ---
 

@@ -337,6 +337,75 @@ func TestNewOpenAIModel_ExtraBody(t *testing.T) {
 	}
 }
 
+// TestNewOpenAIModel_IdentifyingHeaders verifies the D43 default identifying
+// headers (X-Title, HTTP-Referer) go out on the wire, and that ExtraHeaders
+// overrides a default by key while leaving the other default untouched.
+func TestNewOpenAIModel_IdentifyingHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	m := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	generateOnce(t, m, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	if got := gotHeaders.Get("X-Title"); got != "WackyPub" {
+		t.Errorf("expected default X-Title WackyPub, got %q", got)
+	}
+	if got := gotHeaders.Get("HTTP-Referer"); got != "https://github.com/colinrgodsey/wackypub" {
+		t.Errorf("expected default HTTP-Referer, got %q", got)
+	}
+
+	m2 := NewOpenAIModel(&RuntimeConfig{
+		Model:        "test-model",
+		Endpoint:     srv.URL,
+		ExtraHeaders: map[string]string{"X-Title": "MyCoolApp"},
+	})
+	generateOnce(t, m2, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	if got := gotHeaders.Get("X-Title"); got != "MyCoolApp" {
+		t.Errorf("expected overridden X-Title MyCoolApp, got %q", got)
+	}
+	if got := gotHeaders.Get("HTTP-Referer"); got != "https://github.com/colinrgodsey/wackypub" {
+		t.Errorf("expected HTTP-Referer to remain the default when only X-Title is overridden, got %q", got)
+	}
+}
+
+// TestNewOpenAIModel_OpenRouterConditionalHeaders verifies X-OpenRouter-Title
+// and X-OpenRouter-Categories only go out when the endpoint is detected as
+// OpenRouter, per D43.
+func TestNewOpenAIModel_OpenRouterConditionalHeaders(t *testing.T) {
+	var gotHeaders http.Header
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeaders = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	// Endpoint string contains "openrouter.ai" in the path - host stays local
+	// so the request actually lands on the test server, no real network call.
+	mOR := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL + "/openrouter.ai/v1"})
+	generateOnce(t, mOR, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	if got := gotHeaders.Get("X-OpenRouter-Title"); got != "WackyPub" {
+		t.Errorf("expected X-OpenRouter-Title WackyPub for an OpenRouter endpoint, got %q", got)
+	}
+	if got := gotHeaders.Get("X-OpenRouter-Categories"); got != "creative-writing,personal-agent" {
+		t.Errorf("expected X-OpenRouter-Categories creative-writing,personal-agent, got %q", got)
+	}
+
+	mPlain := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	generateOnce(t, mPlain, []*genai.Content{genai.NewContentFromText("hi", "user")})
+
+	if got := gotHeaders.Get("X-OpenRouter-Categories"); got != "" {
+		t.Errorf("expected no X-OpenRouter-Categories for a non-OpenRouter endpoint, got %q", got)
+	}
+}
+
 // TestNewOpenAIModel_SupportsReasoningDetails exercises the exact round trip
 // that broke against OpenRouter's "auto" routing (DECISIONS.md D6): a
 // response carrying structured reasoning_details blocks is captured on

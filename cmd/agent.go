@@ -319,6 +319,8 @@ Read-only: does not modify anything.`,
 	},
 }
 
+var forceCompact bool
+
 // wackypub agent <agent_id> compact OR wackypub agent compact <agent_id>
 var agentCompactCmd = &cobra.Command{
 	Use:   "compact [agent_id]",
@@ -331,6 +333,10 @@ a no-op - it never errors just because compaction wasn't needed.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Pass --force to skip the contextWindow/threshold check and compact regardless - useful for testing
+a custom COMPACT.md without needing to actually grow a session past the real threshold first. Still
+a no-op on a genuinely empty session even with --force.
 
 Prints whether compaction actually ran. Acquires the session lock for the duration of the
 operation.`,
@@ -351,7 +357,7 @@ operation.`,
 		}
 
 		ctx := context.Background()
-		compacted, err := sdk.CompactSession(ctx, agentID)
+		compacted, err := sdk.CompactSession(ctx, agentID, forceCompact)
 		if err != nil {
 			return err
 		}
@@ -707,6 +713,8 @@ func init() {
 	scratchpadSearchCmd.Flags().BoolVar(&scratchpadRegex, "regex", false, "Treat query as a regular expression pattern")
 	scratchpadSearchCmd.Flags().BoolVar(&scratchpadCaseInsensitive, "case-insensitive", false, "Perform case-insensitive search (default: false)")
 	scratchpadSearchCmd.Flags().IntVar(&scratchpadMaxResults, "max-results", 50, "Maximum number of matching lines to return")
+
+	agentCompactCmd.Flags().BoolVar(&forceCompact, "force", false, "Skip the contextWindow threshold check and compact regardless")
 
 	scratchpadCmd.AddCommand(scratchpadCreateCmd)
 	scratchpadCmd.AddCommand(scratchpadReadCmd)

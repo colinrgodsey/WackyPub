@@ -43,6 +43,11 @@ type RuntimeConfig struct {
 	SupportsReasoningDetails bool           `json:"supportsReasoningDetails,omitempty"`
 	ExtraBody                map[string]any `json:"extraBody,omitempty"`
 
+	// ExtraHeaders overrides the default identifying HTTP headers
+	// (X-Title, HTTP-Referer) sent on every request - a key present here
+	// replaces the default of the same name. See D43.
+	ExtraHeaders map[string]string `json:"extraHeaders,omitempty"`
+
 	// Generic thinking aliases (fallback if provider-specific fields are unset):
 	ThinkingBudgetTokens *int   `json:"thinkingBudgetTokens,omitempty"`
 	ThinkingEffort       string `json:"thinkingEffort,omitempty"`
@@ -58,6 +63,12 @@ type RuntimeConfig struct {
 	// default (e.g. Qwen3), where thinking never counts toward future
 	// requests' token usage.
 	PreserveThinking bool `json:"preserveThinking,omitempty"`
+
+	// MaxImageDimension gates "wackypub agent <id> add-media" (D47): the
+	// longer side, in pixels, an attached image is downscaled to fit (never
+	// upscaled). Absent or <= 0 means image attachments are rejected outright
+	// - image support is opt-in per agent, not on by default.
+	MaxImageDimension int `json:"maxImageDimension,omitempty"`
 }
 
 // LoadRuntimeConfig reads and unmarshals runtime.json for an agent.

@@ -53,7 +53,19 @@ factoring compaction behind some kind of strategy interface/config knob
 instead of the one fixed implementation, once a second real use case for
 a different strategy actually shows up.
 
-## Compaction bypasses the runner pipeline - almost certainly breaks prompt-cache prefix reuse in practice
+## Compaction bypasses the runner pipeline - almost certainly breaks prompt-cache prefix reuse in practice (Resolved: D45)
+
+Fixed - see D45 in DECISIONS.md. `CheckAndCompactSession` now seeds a
+disposable `session.InMemoryService()` with the same turn shape
+`FileSessionService.Get` builds for a real turn, then runs one real
+`runner.Run` call through the agent's own `fa.ADKAgent`. Verified live: the
+wire request for a forced compaction call and a normal `generate` call have
+byte-identical `messages[0]` (system role) and `messages[1]`, and identical
+`tools` arrays. `TestCheckAndCompactSession_WirePayloadMatchesRealTurnShape`
+(`pkg/agent/compaction_test.go`) is the httptest-based wire-payload test this
+TODO asked for.
+
+Original text preserved below for context.
 
 `TestCompactionPrefixPreservation` (`pkg/agent/compaction_test.go`) is
 misleadingly named - it only checks that `MEMORY.md` still exists after a
@@ -96,19 +108,14 @@ Once fixed, the httptest-based wire-payload test this TODO originally
 asked for (same pattern as `openai_model_test.go`'s reasoning-egress
 tests) is what should verify it going forward.
 
-## How compaction should treat loaded skills
+## How compaction should treat loaded skills (Resolved: D44)
 
-Once `load_skill` returns a skill's body, it's a normal tool-response
-turn like any other - fully subject to the same compaction/archival
-boundary logic as everything else (D8-ish territory). Most agent harnesses
-hit this same problem: is a loaded skill's full text worth preserving
-verbatim across compaction (bloats `<PERSISTENT_MEMORY>`), or is it enough
-for the memory addendum to note "skill X was loaded" so the agent can
-`load_skill` it again if it's actually still needed (cheap, matches how
-compaction already treats everything else as re-derivable)? No decision
-made yet - needs to happen before/alongside the skills system's first
-implementation, not as an afterthought once agents start actually
-accumulating loaded-skill turns that get archived.
+Decided and implemented: the memory addendum notes that a skill was
+loaded and that its content wasn't preserved (reload via `load_skill` if
+still needed), never condenses/summarizes what the skill actually said.
+A new guideline (item 7) in the default compaction prompt
+(`pkg/agent/default_compact.md`) says so explicitly. Verified live that
+the model actually followed it against a real request.
 
 ## `load_skill_extra` for skill reference files
 
@@ -178,15 +185,21 @@ the fork changes. Once the reasoning-egress fix lands in
 `achetronic/adk-utils-go` upstream and is tagged, drop the `replace`
 directive entirely and depend on a real tagged version.
 
-## `RunWithRunner` / `BuildADKAgent` path is unused
+## `FolderAgent.RunWithRunner` is unused (Narrowed: D45)
 
-`FolderAgent.RunWithRunner` (`pkg/agent/agent_folder.go`) and
-`BuildADKAgent`/`llmagent.New` (`pkg/agent/adk_agent.go`) construct and use
-ADK's actual `LLMAgent`/`Runner` pipeline, but no CLI command or SDK method
-calls `RunWithRunner`. Either find a use for it (multi-agent delegation,
-tool use via ADK's flow, etc.) or remove it - right now it's dead code that
-still has to be kept in sync with ADK API changes (it was part of the v1 ->
-v2 migration effort) for no exercised benefit.
+`BuildADKAgent`/`llmagent.New` (`pkg/agent/adk_agent.go`) is not actually
+dead - confirmed it's exercised in production via `BuildADKAgentWithConfig`,
+which `LoadFolderAgent` calls for every real agent, and D45's compaction fix
+now builds a second, disposable `agent.Agent`-driven session on top of the
+same pipeline. Only `FolderAgent.RunWithRunner` itself
+(`pkg/agent/agent_folder.go`) remains genuinely unused - D45 needed the same
+"disposable in-memory session + one real runner call" shape but had to
+hand-roll it rather than call `RunWithRunner` directly, since `RunWithRunner`
+only supports seeding a single fresh prompt against an empty session, not
+compaction's need to seed a specific historical turn slice (the memory turn
+plus the archived turns) before the new message. Either find `RunWithRunner`
+a real caller with that single-fresh-prompt shape (a plain one-off
+generation outside the session.jsonl-backed flow) or remove it.
 
 ## `session.jsonl` has no defense against the missing-trailing-newline corruption mode
 
@@ -552,3 +565,36 @@ struct in memory instead of going through this path at all), but worth
 deciding whether `OpenFile` should get the same early bypass `Resolve`
 has, or whether `Resolve`'s bypass is the one that's actually wrong.
 
+
+## Binary/image `get_scratchpad` reads should redirect to the next turn instead of just rejecting (D48)
+
+D48 makes `get_scratchpad`/`search_scratchpad` reject `.dat` (binary)
+entries outright - correct as far as it goes, since Chat Completions'
+tool-role message content is text-only regardless of the underlying
+model's own multimodal capability (confirmed live against
+`achetronic/adk-utils-go`'s OpenAI dialect: `openai.ToolMessage(string(...), id)`,
+no multipart slot). But a flat rejection is a dead end for a real case: an
+agent that captured an image via some other tool (e.g. a chart-generator)
+mid-loop has no way to ever look at what it made.
+
+Better: instead of rejecting, acknowledge ("scratchpad content is an
+image, it will be available to you on your next turn"), queue the image
+content, and force the *current* tool loop to terminate early so the next
+`generate` call picks it up as a fresh top-level user turn - where D47
+confirmed multipart image content in a normal user turn does work.
+
+Needs the tool loop to stop immediately when this happens, not just wait
+for the model to stop on its own. The mechanism already exists for a
+different trigger: `BuildADKAgentWithConfig`'s `BeforeModelCallback`
+(`pkg/agent/adk_agent.go`) short-circuits with a canned
+`model.LLMResponse` instead of calling the real model once
+`modelCalls > maxToolTurns+1` (the max-tool-turns early-stop case). This
+would reuse the same shape - return a canned response, don't call the
+model - triggered by "an image was just queued" instead of a call-count
+threshold, then append the queued image content to `session.jsonl` so it
+shows up on the next real `generate`.
+
+Deliberately not solved as part of D48 - it's a real, separate design
+pass (the early-termination trigger plumbing, plus deciding where/how
+the queued content gets appended and merged), not something to bolt onto
+an already-large scratchpad format change.

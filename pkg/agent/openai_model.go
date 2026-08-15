@@ -35,6 +35,8 @@ import (
 // writeup. Once the fix lands upstream and is tagged, drop the replace
 // directive and go back to depending on achetronic/adk-utils-go directly.
 func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
+	isOpenRouter := strings.Contains(strings.ToLower(runtimeCfg.Endpoint), "openrouter.ai")
+
 	effort := runtimeCfg.ReasoningEffort
 	if effort == "" {
 		effort = runtimeCfg.ThinkingEffort
@@ -51,7 +53,6 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 			}
 			extraBody = clone
 		}
-		isOpenRouter := strings.Contains(strings.ToLower(runtimeCfg.Endpoint), "openrouter.ai")
 		if isOpenRouter {
 			if _, ok := extraBody["reasoning"]; !ok {
 				extraBody["reasoning"] = map[string]any{"effort": effort}
@@ -66,6 +67,31 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 	timeoutSec := runtimeCfg.TimeoutSeconds
 	if timeoutSec <= 0 {
 		timeoutSec = DefaultHTTPTimeoutSeconds
+	}
+
+	// Identifying headers sent on every request - defaults so a client never
+	// shows up as "unknown" on OpenRouter's dashboard/rankings, which key off
+	// these two specifically, overridable per agent via runtime.json's
+	// extraHeaders for anyone embedding wackypub under their own name. No
+	// User-Agent override here - confirmed live it doesn't survive openai-go
+	// setting its own default (getDefaultHeaders in its requestconfig
+	// package) regardless of what's passed through HTTPOptions.Headers; not
+	// worth patching the adk-utils-go fork for. See D43.
+	headers := http.Header{
+		"X-Title":      []string{"WackyPub"},
+		"HTTP-Referer": []string{"https://github.com/colinrgodsey/wackypub"},
+	}
+	if isOpenRouter {
+		// OpenRouter-specific: X-Title above already covers app naming (its
+		// docs list X-Title as an accepted alias for X-OpenRouter-Title,
+		// confirmed by OpenRouter's own support), but the marketplace
+		// category header has no non-prefixed alias, so it's only worth
+		// sending here, not unconditionally like the two above.
+		headers.Set("X-OpenRouter-Title", "WackyPub")
+		headers.Set("X-OpenRouter-Categories", "creative-writing,personal-agent")
+	}
+	for k, v := range runtimeCfg.ExtraHeaders {
+		headers.Set(k, v)
 	}
 
 	var dialect adkopenai.Dialect
@@ -85,7 +111,8 @@ func NewOpenAIModel(runtimeCfg *RuntimeConfig) model.LLM {
 		BaseURL:   strings.TrimSuffix(runtimeCfg.Endpoint, "/"),
 		ModelName: runtimeCfg.Model,
 		HTTPOptions: adkopenai.HTTPOptions{
-			Client: &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			Client:  &http.Client{Timeout: time.Duration(timeoutSec) * time.Second},
+			Headers: headers,
 		},
 		Dialect:         dialect,
 		ReasoningEgress: adkopenai.ReasoningEgressMode(runtimeCfg.ReasoningEgress),

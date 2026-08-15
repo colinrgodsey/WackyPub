@@ -9,57 +9,70 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/agent"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/genai"
 )
 
 const DefaultCompactionPct = 50.0
 
+// DefaultCompactMD holds examples/COMPACT.md's content, in the same
+// append-only/compact-pct frontmatter + body shape a real <agentDir>/COMPACT.md
+// has - parsed through the exact same ParseCompactConfig path, according to D44.
+//
+// Set from main.go (D45), which embeds examples/COMPACT.md and assigns it here
+// before cmd.Execute() runs - mirrors cmd.BundledA2ASkill/BundledWSSkill (D34),
+// required because examples/ isn't reachable by a //go:embed directive living
+// in pkg/agent (embed patterns can't use ".." to leave their own package
+// directory, and a symlink pointing back into pkg/agent doesn't work either -
+// confirmed live, embed refuses to read a symlink at all: "cannot embed
+// irregular file"). Tests populate this themselves (see TestMain) rather than
+// relying on main.go ever running.
+var DefaultCompactMD string
+
 type CompactFrontmatter struct {
-	AppendOnly *bool    `yaml:"append-only"`
-	CompactPct *float64 `yaml:"compact-pct"`
+	AppendOnly       *bool    `yaml:"append-only"`
+	CompactPct       *float64 `yaml:"compact-pct"`
+	CompactionNotice *string  `yaml:"compaction-notice"`
 }
 
 type CompactConfig struct {
-	AppendOnly bool
-	CompactPct float64
-	Prompt     string
+	AppendOnly       bool
+	CompactPct       float64
+	CompactionNotice string
+	Prompt           string
 }
 
-// LoadCompactConfig loads per-agent COMPACT.md from <agentDir>/COMPACT.md if present according to D38.
-// Falls back to fixed defaults (AppendOnly=true, CompactPct=50.0, CompactionDirectivePrompt) if absent.
-func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
+// defaultCompactionNotice is CompactConfig.CompactionNotice's fallback when a
+// COMPACT.md doesn't set the field at all (D46) - generic rather than naming
+// any specific search/memory tool, since wackypub has no idea what a given
+// agent actually has available.
+const defaultCompactionNotice = "Some turns from earlier in this session were just archived into persistent memory above during compaction. If what follows references something not fully detailed there, it's no longer directly visible here - consider using memory or search tools to recover it rather than assuming it never happened."
+
+// ParseCompactConfig parses COMPACT.md's YAML frontmatter + body from an
+// in-memory string - either read from an agent's own <agentDir>/COMPACT.md or
+// the embedded DefaultCompactMD - mirroring ParseSkillFile/ParseSkillContent's
+// split (D40). Fields left unset in the frontmatter keep cfg's zero-value
+// defaults (AppendOnly=false, CompactPct=0) - callers seed cfg with real
+// defaults before calling if that matters, the way LoadCompactConfig does.
+func ParseCompactConfig(content string) (*CompactConfig, error) {
 	cfg := &CompactConfig{
-		AppendOnly: true,
-		CompactPct: DefaultCompactionPct,
-		Prompt:     CompactionDirectivePrompt,
+		AppendOnly:       true,
+		CompactPct:       DefaultCompactionPct,
+		CompactionNotice: defaultCompactionNotice,
 	}
 
-	if agentDir == "" {
-		return cfg, nil
-	}
-
-	compactPath := filepath.Join(agentDir, "COMPACT.md")
-	data, err := os.ReadFile(compactPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
-		return nil, fmt.Errorf("failed to read COMPACT.md at %s: %w", compactPath, err)
-	}
-
-	content := string(data)
 	body := strings.TrimSpace(content)
 
 	var fm CompactFrontmatter
-	trimmed := strings.TrimSpace(content)
-	if strings.HasPrefix(trimmed, "---") {
-		parts := strings.SplitN(trimmed[3:], "---", 2)
+	if strings.HasPrefix(body, "---") {
+		parts := strings.SplitN(body[3:], "---", 2)
 		if len(parts) == 2 {
 			yamlText := parts[0]
 			body = strings.TrimSpace(parts[1])
 			if err := yaml.Unmarshal([]byte(yamlText), &fm); err != nil {
-				return nil, fmt.Errorf("failed to parse YAML frontmatter in %s: %w", compactPath, err)
+				return nil, fmt.Errorf("failed to parse YAML frontmatter: %w", err)
 			}
 		}
 	}
@@ -75,35 +88,31 @@ func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
 		}
 	}
 
-	if body != "" {
-		cfg.Prompt = body
+	if fm.CompactionNotice != nil {
+		cfg.CompactionNotice = *fm.CompactionNotice
 	}
+
+	cfg.Prompt = body
 
 	return cfg, nil
 }
 
-const CompactionDirectivePrompt = `You are a state compaction engine updating a persistent execution log for this session.
-
-Look back at the preceding conversation turns that occurred after <PERSISTENT_MEMORY>. These turns are about to be archived.
-
-### TASK
-Generate a concise, chronological ADDENDUM to append directly to <PERSISTENT_MEMORY> that captures new developments, state updates, and outcomes from these turns.
-
-The agent reading your addendum will not have access to the turns you're summarizing - record anything that would otherwise be lost. It will, however, share your exact same system prompt: use that to judge what's actually worth preserving, the same way you'd judge it for yourself.
-
-### STRICT GUIDELINES
-1. **NO DUPLICATION:** Do NOT re-state facts, decisions, or rules already captured in <PERSISTENT_MEMORY> unless updating their status.
-2. **STATE UPDATES & INVALIDATION:** If a turn explicitly supersedes or completes a past item, output an explicit update (e.g., "* UPDATED: Task X is now COMPLETED / CHANGED to Y").
-3. **PRESERVE CONCRETE DATA:** Maintain exact file paths, shell commands, function names, error codes, and specific user preference overrides. Never generalize a specific file path into "the config file".
-4. **TIMESTAMPS:** Only include timestamps/dates if they explicitly appeared in the messages or tool outputs. Do not invent timestamps.
-5. **FOCUS AREAS:** Record key decisions, executed actions, structural/schema changes, discovered bugs/issues, explicitly stated user preferences, and any other memory focus given in your system prompt.
-6. **MAINTAIN ORDER:** The new items you record should appear in the same order they appear in the session.
-
-### OUTPUT FORMAT RULES
-- Output **ONLY** the raw markdown bullet points to append (starting each line with '*').
-- **NO** markdown code fences.
-- **NO** introductory or concluding text (e.g., "Here is the addendum:").
-- **NO** section headers (do NOT use '#', '##', or '###').`
+// LoadCompactConfig loads per-agent COMPACT.md from <agentDir>/COMPACT.md if
+// present according to D38. Falls back to the embedded default (DefaultCompactMD)
+// if absent, according to D44.
+func LoadCompactConfig(agentDir string) (*CompactConfig, error) {
+	if agentDir != "" {
+		compactPath := filepath.Join(agentDir, "COMPACT.md")
+		data, err := os.ReadFile(compactPath)
+		if err == nil {
+			return ParseCompactConfig(string(data))
+		}
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to read COMPACT.md at %s: %w", compactPath, err)
+		}
+	}
+	return ParseCompactConfig(DefaultCompactMD)
+}
 
 // ReadMemoryFile reads the contents of <agent_dir>/MEMORY.md.
 // If the file does not exist, returns empty string without error.
@@ -133,13 +142,27 @@ func FormatPersistentMemoryTurn(memoryContent string) string {
 	return fmt.Sprintf("<PERSISTENT_MEMORY>\n%s\n</PERSISTENT_MEMORY>", strings.TrimSpace(memoryContent))
 }
 
-// CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
-// preserving the exact session prefix to optimize prompt caching according to D38.
-func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, systemPrompt string, llmModel model.LLM) (bool, error) {
-	if runtimeCfg.ContextWindow <= 0 {
-		return false, nil
-	}
+// FormatCompactionNotice wraps a compaction-notice string in <COMPACTION_NOTICE>
+// tags, mirroring FormatPersistentMemoryTurn (D46).
+func FormatCompactionNotice(notice string) string {
+	return fmt.Sprintf("<COMPACTION_NOTICE>\n%s\n</COMPACTION_NOTICE>", strings.TrimSpace(notice))
+}
 
+// CheckAndCompactSession checks if the session exceeds contextWindow and performs compaction,
+// preserving the exact session prefix to optimize prompt caching according to D38/D45.
+// force skips the contextWindow/token-estimate gate checks below (D44) - still
+// refuses on a genuinely empty session regardless, since forcing compaction with
+// nothing to compact isn't a testing use case, it's a no-op either way.
+//
+// adkAgent is the calling FolderAgent's real ADK agent (fa.ADKAgent) - already
+// carries the agent's system instruction and tool declarations, so routing the
+// compaction call through it (via a disposable in-memory session + one
+// runner.Run call, D45) sends a request whose shared prefix - system
+// instruction, tools, memory turn, the archived turns - is structurally
+// identical to a real generation call, unlike the hand-built request this
+// used to send directly to an *model.LLM (no Tools, system prompt glued into
+// turn 1's text - see D45 for the full trace).
+func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *RuntimeConfig, adkAgent agent.Agent, force bool) (bool, error) {
 	turns, err := ReadSessionTurns(agentDir)
 	if err != nil {
 		return false, err
@@ -149,9 +172,14 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, nil
 	}
 
-	estimatedTokens := EstimateTokens(turns, runtimeCfg.PreserveThinking)
-	if estimatedTokens < runtimeCfg.ContextWindow {
-		return false, nil
+	if !force {
+		if runtimeCfg.ContextWindow <= 0 {
+			return false, nil
+		}
+		estimatedTokens := EstimateTokens(turns, runtimeCfg.PreserveThinking)
+		if estimatedTokens < runtimeCfg.ContextWindow {
+			return false, nil
+		}
 	}
 
 	compactCfg, err := LoadCompactConfig(agentDir)
@@ -189,37 +217,62 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, err
 	}
 
-	// Build contents payload matching the exact session prefix
-	var contents []*genai.Content
+	agentID := filepath.Base(agentDir)
+	compactSessionID := agentID + "-compact"
 
-	// 1. User Turn 1: system prompt + <PERSISTENT_MEMORY>, mirroring GenerateTurn's first
-	// turn exactly so the request prefix matches for prompt caching.
+	// Seed a fresh, disposable in-memory session with the exact turn shape
+	// FileSessionService.Get builds for a real turn (D45): the persistent-memory
+	// turn alone (no system prompt glued in - that lives on adkAgent's own
+	// Instruction field), then the slice of session history being archived.
+	// AppendEvent on an in-memory session is a pure in-memory write - nothing
+	// here touches disk, and the whole session is discarded when this
+	// function returns.
 	memTurnText := FormatPersistentMemoryTurn(existingMemory)
-	firstTurnText := systemPrompt + "\n\n" + memTurnText
-	contents = append(contents, genai.NewContentFromText(firstTurnText, "user"))
+	memTurn := genai.NewContentFromText(memTurnText, "user")
+	seedContents := MergeConsecutiveUserTurns(append([]*genai.Content{memTurn}, compactTurns...))
 
-	// 2. First X% of session.jsonl turns (already genai.Content)
-	contents = append(contents, compactTurns...)
-
-	// 3. User Turn with Compaction Directive Prompt (from COMPACT.md or default)
-	contents = append(contents, genai.NewContentFromText(compactCfg.Prompt, "user"))
-
-	// Collapse consecutive user turns before sending — same rationale as
-	// GenerateTurn (see MergeConsecutiveUserTurns doc comment).
-	contents = MergeConsecutiveUserTurns(contents)
-
-	req := &model.LLMRequest{
-		Model:    llmModel.Name(),
-		Contents: contents,
+	sessionSvc := session.InMemoryService()
+	createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
+		AppName:   "wackypub",
+		UserID:    "user",
+		SessionID: compactSessionID,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to create in-memory compaction session: %w", err)
+	}
+	for i, c := range seedContents {
+		evt := session.NewEvent(ctx, fmt.Sprintf("compact_seed_%d", i))
+		evt.Content = c
+		if c.Role == "model" {
+			evt.Author = agentID
+		} else {
+			evt.Author = "user"
+		}
+		if err := sessionSvc.AppendEvent(ctx, createResp.Session, evt); err != nil {
+			return false, fmt.Errorf("failed to seed compaction session: %w", err)
+		}
 	}
 
+	r, err := runner.New(runner.Config{
+		AppName:        "wackypub",
+		Agent:          adkAgent,
+		SessionService: sessionSvc,
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to create compaction runner: %w", err)
+	}
+
+	directive := genai.NewContentFromText(compactCfg.Prompt, "user")
+
 	var addendum string
-	for resp, err := range llmModel.GenerateContent(ctx, req, false) {
+	for event, err := range r.Run(ctx, "user", compactSessionID, directive, agent.RunConfig{}) {
 		if err != nil {
 			return false, fmt.Errorf("LLM compaction generation failed: %w", err)
 		}
-		if resp != nil && resp.Content != nil {
-			addendum += ContentText(resp.Content)
+		if event != nil {
+			if text := ExtractTextFromEvent(event); text != "" {
+				addendum = text
+			}
 		}
 	}
 
@@ -242,12 +295,25 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		}
 	}
 
+	// Flag the discontinuity to whatever generates the next real turn (D46):
+	// a separate synthetic user turn, not spliced into the surviving boundary
+	// turn's own text, so what the user/agent actually said stays intact.
+	// Lands as its own turn in session.jsonl and gets folded into the
+	// following real user turn by MergeConsecutiveUserTurns the next time
+	// anything reads the session (FileSessionService.Get, same as the memory
+	// turn) - no special-casing needed. Skipped on an empty remaining session
+	// (nothing to attach it in front of) or an explicit opt-out.
+	notice := strings.TrimSpace(compactCfg.CompactionNotice)
+	if len(remainingTurns) > 0 && notice != "" {
+		noticeTurn := genai.NewContentFromText(FormatCompactionNotice(notice), "user")
+		remainingTurns = append([]*genai.Content{noticeTurn}, remainingTurns...)
+	}
+
 	if err := WriteSessionTurns(agentDir, remainingTurns); err != nil {
 		return false, fmt.Errorf("failed to update session.jsonl after compaction: %w", err)
 	}
 
 	wsDir := filepath.Dir(agentDir)
-	agentID := filepath.Base(agentDir)
 	_ = CommitWorkspaceEvent(wsDir, agentID, "compact")
 
 	return true, nil

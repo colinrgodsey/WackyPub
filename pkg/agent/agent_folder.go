@@ -477,8 +477,10 @@ func (fa *FolderAgent) GenerateTurn(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("cannot generate: session for agent %q does not end on a user turn - add one first (\"wackypub agent add\") or use \"wackypub agent prompt\" to do both in one call", fa.AgentID)
 	}
 
-	// 1. Check for context window compaction trigger before generating
-	_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.SystemPrompt, fa.Model)
+	// 1. Check for context window compaction trigger before generating - never
+	// forced here, only wackypub agent compact --force / AgentSDK.CompactSession
+	// can force (D44).
+	_, err = CheckAndCompactSession(ctx, fa.AgentDir, fa.RuntimeConfig, fa.ADKAgent, false)
 	if err != nil {
 		// Log compaction warning, but continue execution if possible
 		fmt.Fprintf(os.Stderr, "Warning: session compaction error: %v\n", err)
