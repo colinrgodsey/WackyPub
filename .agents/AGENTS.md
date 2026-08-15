@@ -13,10 +13,11 @@ Agent guidelines for working in the `WackyPub` repository.
 > enforce a security boundary and whether that boundary has actually been
 > pen/escape-tested via [docs/SWARM_TESTING.md](../docs/SWARM_TESTING.md)'s
 > swarm process - **reset a tool there to `?` and delete its report the
-> moment its enforcement logic changes**). For the full architecture
-> deep-dive (directory specs, lifecycle diagrams, compaction mechanics, file
-> schemas), see [docs/agents.md](../docs/agents.md) - this file is
-> orientation, that one is reference.
+> moment its enforcement logic changes**). Also read [README.md](../README.md)
+> at the repository root for the high-level philosophy and conceptual foundation.
+> For the full architecture deep-dive (directory specs, lifecycle diagrams,
+> compaction mechanics, file schemas), see [docs/agents.md](../docs/agents.md) -
+> this file is orientation, that one is reference.
 
 ## Personality and Harness Overrides
 

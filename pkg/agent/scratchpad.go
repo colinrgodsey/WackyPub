@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/h2non/filetype"
 )
 
 const (
@@ -26,7 +28,9 @@ type ScratchpadEntry struct {
 	Size      int    `json:"size"`
 	Lines     int    `json:"lines"`
 	CreatedBy string `json:"created_by"`
-	Text      string `json:"text"`
+	Text      string `json:"text,omitempty"`
+	IsBinary  bool   `json:"is_binary,omitempty"`
+	MIMEType  string `json:"mime_type,omitempty"`
 }
 
 type ScratchpadItem struct {
@@ -34,6 +38,34 @@ type ScratchpadItem struct {
 	Size      int    `json:"size"`
 	Lines     int    `json:"lines"`
 	CreatedBy string `json:"created_by"`
+	IsBinary  bool   `json:"is_binary,omitempty"`
+	MIMEType  string `json:"mime_type,omitempty"`
+}
+
+// IsBinaryContent checks the first min(24, len(data)) bytes for any byte <= 8 (NUL, etc.) according to D48.
+func IsBinaryContent(data []byte) bool {
+	checkLen := len(data)
+	if checkLen > 24 {
+		checkLen = 24
+	}
+	for i := 0; i < checkLen; i++ {
+		if data[i] <= 8 {
+			return true
+		}
+	}
+	return false
+}
+
+// DetectMediaType returns whether data is binary and its MIME type using a 2-stage heuristic per D48.
+func DetectMediaType(data []byte) (bool, string) {
+	if IsBinaryContent(data) {
+		kind, err := filetype.Match(data)
+		if err == nil && kind != filetype.Unknown {
+			return true, kind.MIME.Value
+		}
+		return true, "application/octet-stream"
+	}
+	return false, "text/plain"
 }
 
 // CountLines counts the number of lines in text according to D39.
@@ -63,18 +95,28 @@ func generateRandomID() string {
 	return result.String()
 }
 
-func findScratchpadFile(agentDir string, id string) (string, string, error) {
+func findScratchpadFile(agentDir string, id string) (string, string, bool, error) {
 	spDir := filepath.Join(agentDir, ScratchpadDirName)
-	pattern := filepath.Join(spDir, id+"-*.txt")
+	pattern := filepath.Join(spDir, id+"-*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil || len(matches) == 0 {
-		return "", "", fmt.Errorf("scratchpad entry %q not found", id)
+		return "", "", false, fmt.Errorf("scratchpad entry %q not found", id)
 	}
-	return matches[0], filepath.Base(matches[0]), nil
+	for _, m := range matches {
+		base := filepath.Base(m)
+		if strings.HasSuffix(base, ".txt") {
+			return m, base, false, nil
+		}
+		if strings.HasSuffix(base, ".dat") {
+			return m, base, true, nil
+		}
+	}
+	return "", "", false, fmt.Errorf("scratchpad entry %q not found", id)
 }
 
-func parseFilenameParts(baseName string) (id string, lines int, createdBy string) {
-	baseNoExt := strings.TrimSuffix(baseName, ".txt")
+func parseFilenameParts(baseName string) (id string, lines int, createdBy string, isBinary bool) {
+	isBinary = strings.HasSuffix(baseName, ".dat")
+	baseNoExt := strings.TrimSuffix(strings.TrimSuffix(baseName, ".txt"), ".dat")
 	parts := strings.SplitN(baseNoExt, "-", 3)
 	if len(parts) == 3 {
 		id = parts[0]
@@ -83,14 +125,14 @@ func parseFilenameParts(baseName string) (id string, lines int, createdBy string
 			lines = n
 		}
 		createdBy = parts[2]
-		return id, lines, createdBy
+		return id, lines, createdBy, isBinary
 	}
 	if len(parts) == 2 {
 		id = parts[0]
 		createdBy = parts[1]
-		return id, 0, createdBy
+		return id, 0, createdBy, isBinary
 	}
-	return baseNoExt, 0, ""
+	return baseNoExt, 0, "", isBinary
 }
 
 func EvictOldestScratchpad(spDir string, maxCap int) {
@@ -105,7 +147,7 @@ func EvictOldestScratchpad(spDir string, maxCap int) {
 	}
 	var files []fileInfo
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".txt") && !strings.HasSuffix(entry.Name(), ".dat")) {
 			continue
 		}
 		info, err := entry.Info()
@@ -132,7 +174,7 @@ func EvictOldestScratchpad(spDir string, maxCap int) {
 	}
 }
 
-// CreateScratchpad creates a new scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
+// CreateScratchpad creates a new text scratchpad entry in <agentDir>/scratchpad/<id>-<lines>-<createdBy>.txt
 // according to D30/D39.
 // Automatically expands inline <SCRATCHPAD_DATA id="X" ... /> macros before storing.
 // Atomic and collision-safe across separate OS processes via O_CREATE|O_EXCL.
@@ -159,6 +201,10 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 
 	for i := 0; i < 100; i++ {
 		candidateID := generateRandomID()
+		// Check if any entry (.txt or .dat) already exists with this ID
+		if matches, _ := filepath.Glob(filepath.Join(spDir, candidateID+"-*")); len(matches) > 0 {
+			continue
+		}
 		candidatePath := filepath.Join(spDir, fmt.Sprintf("%s-%d-%s.txt", candidateID, lineCount, createdBy))
 		f, err := os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
 		if err == nil {
@@ -190,14 +236,111 @@ func CreateScratchpad(agentDir string, text string, createdBy string) (*Scratchp
 		Lines:     lineCount,
 		CreatedBy: createdBy,
 		Text:      expandedText,
+		IsBinary:  false,
+		MIMEType:  "text/plain",
 	}, nil
 }
 
+// CreateBinaryScratchpad creates a new binary scratchpad entry in <agentDir>/scratchpad/<id>-0-<createdBy>.dat per D48.
+func CreateBinaryScratchpad(agentDir string, data []byte, createdBy string, mimeType string) (*ScratchpadEntry, error) {
+	if createdBy == "" {
+		createdBy = "run_command"
+	}
+	if mimeType == "" {
+		_, mimeType = DetectMediaType(data)
+	}
+
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	if err := os.MkdirAll(spDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create scratchpad directory: %w", err)
+	}
+
+	var id string
+	var filePath string
+	var file *os.File
+
+	for i := 0; i < 100; i++ {
+		candidateID := generateRandomID()
+		// Check if any entry (.txt or .dat) already exists with this ID
+		if matches, _ := filepath.Glob(filepath.Join(spDir, candidateID+"-*")); len(matches) > 0 {
+			continue
+		}
+		candidatePath := filepath.Join(spDir, fmt.Sprintf("%s-0-%s.dat", candidateID, createdBy))
+		f, err := os.OpenFile(candidatePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0644)
+		if err == nil {
+			id = candidateID
+			filePath = candidatePath
+			file = f
+			break
+		}
+		if !os.IsExist(err) {
+			return nil, fmt.Errorf("failed to create binary scratchpad entry file: %w", err)
+		}
+	}
+	if file == nil {
+		return nil, fmt.Errorf("failed to generate unique scratchpad ID after retries")
+	}
+
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		os.Remove(filePath)
+		return nil, fmt.Errorf("failed to write binary scratchpad content: %w", err)
+	}
+	file.Close()
+
+	EvictOldestScratchpad(spDir, MaxScratchpadEntries)
+
+	return &ScratchpadEntry{
+		ID:        id,
+		Size:      len(data),
+		Lines:     0,
+		CreatedBy: createdBy,
+		IsBinary:  true,
+		MIMEType:  mimeType,
+	}, nil
+}
+
+// DeleteScratchpad removes a scratchpad entry (.txt or .dat) by ID per D48.
+func DeleteScratchpad(agentDir string, id string) error {
+	spDir := filepath.Join(agentDir, ScratchpadDirName)
+	pattern := filepath.Join(spDir, id+"-*")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return fmt.Errorf("scratchpad entry %q not found", id)
+	}
+	deleted := false
+	for _, m := range matches {
+		if strings.HasSuffix(m, ".txt") || strings.HasSuffix(m, ".dat") {
+			if err := os.Remove(m); err != nil {
+				return fmt.Errorf("failed to delete scratchpad entry %q: %w", id, err)
+			}
+			deleted = true
+		}
+	}
+	if !deleted {
+		return fmt.Errorf("scratchpad entry %q not found", id)
+	}
+	return nil
+}
+
 // GetScratchpad retrieves stored text by entry ID, optionally paginated by line range.
+// Rejects binary (.dat) entries outright per D48.
 func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (string, error) {
-	filePath, _, err := findScratchpadFile(agentDir, id)
+	filePath, _, isBinary, err := findScratchpadFile(agentDir, id)
 	if err != nil {
 		return "", err
+	}
+
+	if isBinary {
+		dataHeader := make([]byte, 262)
+		f, err := os.Open(filePath)
+		mimeType := "application/octet-stream"
+		if err == nil {
+			n, _ := f.Read(dataHeader)
+			f.Close()
+			_, mimeType = DetectMediaType(dataHeader[:n])
+		}
+		return "", fmt.Errorf("scratchpad entry %q is binary data (%s) and cannot be read as text", id, mimeType)
 	}
 
 	data, err := os.ReadFile(filePath)
@@ -247,7 +390,7 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 
 	var list []itemWithTime
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+		if entry.IsDir() || (!strings.HasSuffix(entry.Name(), ".txt") && !strings.HasSuffix(entry.Name(), ".dat")) {
 			continue
 		}
 		info, err := entry.Info()
@@ -256,7 +399,19 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 		}
 
 		baseName := entry.Name()
-		id, lineCount, createdBy := parseFilenameParts(baseName)
+		id, lineCount, createdBy, isBinary := parseFilenameParts(baseName)
+
+		mimeType := "text/plain"
+		if isBinary {
+			mimeType = "application/octet-stream"
+			f, err := os.Open(filepath.Join(spDir, baseName))
+			if err == nil {
+				header := make([]byte, 262)
+				n, _ := f.Read(header)
+				f.Close()
+				_, mimeType = DetectMediaType(header[:n])
+			}
+		}
 
 		list = append(list, itemWithTime{
 			item: ScratchpadItem{
@@ -264,6 +419,8 @@ func ListScratchpads(agentDir string) ([]ScratchpadItem, int, int, error) {
 				Size:      int(info.Size()),
 				Lines:     lineCount,
 				CreatedBy: createdBy,
+				IsBinary:  isBinary,
+				MIMEType:  mimeType,
 			},
 			modTime: info.ModTime(),
 		})
@@ -366,6 +523,7 @@ type SearchScratchpadResult struct {
 }
 
 // SearchScratchpad searches a specific scratchpad entry (by ID) for query according to D25/D30.
+// Rejects binary (.dat) entries outright per D48.
 func SearchScratchpad(agentDir string, id string, query string, caseSensitive *bool, useRegex bool, maxResults int) (*SearchScratchpadResult, error) {
 	if id == "" {
 		return nil, fmt.Errorf("id is required")
@@ -381,9 +539,13 @@ func SearchScratchpad(agentDir string, id string, query string, caseSensitive *b
 		isCaseSensitive = *caseSensitive
 	}
 
-	filePath, _, err := findScratchpadFile(agentDir, id)
+	filePath, _, isBinary, err := findScratchpadFile(agentDir, id)
 	if err != nil {
 		return nil, err
+	}
+
+	if isBinary {
+		return nil, fmt.Errorf("scratchpad entry %q is binary data and cannot be searched as text", id)
 	}
 
 	data, err := os.ReadFile(filePath)

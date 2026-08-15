@@ -54,6 +54,14 @@ type SearchScratchpadArgs struct {
 	MaxResults    int    `json:"max_results,omitempty" jsonschema_description:"Maximum number of matching lines to return (default: 50)"`
 }
 
+type DeleteScratchpadArgs struct {
+	ID string `json:"id" jsonschema_description:"4-character ID of the scratchpad entry to delete"`
+}
+
+type DeleteScratchpadResult struct {
+	Status string `json:"status"`
+}
+
 type ExecToolArgs struct {
 	Args  []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 	Env   map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
@@ -79,7 +87,7 @@ type LoadSkillResult struct {
 	Output string `json:"output"`
 }
 
-// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads)
+// BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad)
 // and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
 func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	toolMap := make(map[string]tool.Tool)
@@ -132,7 +140,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 3. list_scratchpads
 	listTool, err := functiontool.New(functiontool.Config{
 		Name:        "list_scratchpads",
-		Description: "List metadata for all currently-live scratchpad entries (ID, size, lines, created_by), ordered oldest-first, and current capacity usage.",
+		Description: "List metadata for all currently-live scratchpad entries (ID, size, lines, created_by, is_binary, mime_type), ordered oldest-first, and current capacity usage.",
 	}, func(ctx agent.Context, args ListScratchpadsArgs) (ListScratchpadsResult, error) {
 		items, count, capVal, err := ListScratchpads(agentDir)
 		if err != nil {
@@ -152,7 +160,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	// 4. search_scratchpad
 	searchTool, err := functiontool.New(functiontool.Config{
 		Name:        "search_scratchpad",
-		Description: "Search a specific scratchpad entry by ID for matching lines. Returns 1-indexed line numbers and precomputed skip_lines for get_scratchpad pagination.",
+		Description: "Search a specific text scratchpad entry by ID for matching lines. Returns 1-indexed line numbers and precomputed skip_lines for get_scratchpad pagination.",
 	}, func(ctx agent.Context, args SearchScratchpadArgs) (*SearchScratchpadResult, error) {
 		return SearchScratchpad(agentDir, args.ID, args.Query, args.CaseSensitive, args.Regex, args.MaxResults)
 	})
@@ -161,7 +169,23 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	}
 	addTool(searchTool)
 
-	// 3. Single generic run_command tool covering all discovered executables
+	// 5. delete_scratchpad
+	deleteTool, err := functiontool.New(functiontool.Config{
+		Name:        "delete_scratchpad",
+		Description: "Delete a scratchpad entry by ID. Recommended for releasing large binary entries (images, audio) once they are no longer needed.",
+	}, func(ctx agent.Context, args DeleteScratchpadArgs) (DeleteScratchpadResult, error) {
+		err := DeleteScratchpad(agentDir, args.ID)
+		if err != nil {
+			return DeleteScratchpadResult{}, err
+		}
+		return DeleteScratchpadResult{Status: "deleted"}, nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create delete_scratchpad tool: %w", err)
+	}
+	addTool(deleteTool)
+
+	// 6. Single generic run_command tool covering all discovered executables
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent tools: %w", err)
@@ -210,7 +234,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	}
 	addTool(runCmdTool)
 
-	// 4. load_skill tool for on-demand skills
+	// 7. load_skill tool for on-demand skills
 	skillsMap, onDemandSkills, _, err := DiscoverAgentSkills(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent skills: %w", err)
@@ -261,6 +285,21 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) (string, error) {
 	cmdArgs := make([]string, len(args.Args))
 	for i, rawArg := range args.Args {
+		// Check for binary scratchpad references in args (D48: args reject .dat entries outright)
+		if strings.Contains(rawArg, "<SCRATCHPAD_DATA") {
+			matches := scratchpadMacroRegex.FindAllString(rawArg, -1)
+			for _, m := range matches {
+				idMatch := macroIDRegex.FindStringSubmatch(m)
+				if len(idMatch) >= 2 {
+					id := idMatch[1]
+					_, _, isBinary, err := findScratchpadFile(agentDir, id)
+					if err == nil && isBinary {
+						return "", fmt.Errorf("cannot pass binary scratchpad entry %q in command args", id)
+					}
+				}
+			}
+		}
+
 		expanded, err := ExpandScratchpadMacros(agentDir, rawArg)
 		if err != nil {
 			return "", err
@@ -297,18 +336,71 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		}
 	}
 
+	var stdinFile *os.File
 	if args.Stdin != "" {
-		expandedStdin, err := ExpandScratchpadMacros(agentDir, args.Stdin)
-		if err != nil {
-			return "", err
+		trimmedStdin := strings.TrimSpace(args.Stdin)
+		// Check if stdin contains binary scratchpad references per D48
+		if strings.Contains(trimmedStdin, "<SCRATCHPAD_DATA") {
+			var binaryID string
+			matches := scratchpadMacroRegex.FindAllString(trimmedStdin, -1)
+			for _, m := range matches {
+				idMatch := macroIDRegex.FindStringSubmatch(m)
+				if len(idMatch) >= 2 {
+					id := idMatch[1]
+					_, _, isBinary, err := findScratchpadFile(agentDir, id)
+					if err == nil && isBinary {
+						binaryID = id
+						break
+					}
+				}
+			}
+
+			if binaryID != "" {
+				// Exact match check: stdin must be ONLY this single macro reference
+				isExact := false
+				if len(matches) == 1 && scratchpadMacroRegex.FindString(trimmedStdin) == trimmedStdin {
+					isExact = true
+				}
+
+				if !isExact {
+					return "", fmt.Errorf("cannot mix binary scratchpad entry %q with text in stdin", binaryID)
+				}
+
+				// Check for pagination/escaping attributes on binary reference per D48
+				if macroSkipLinesRegex.MatchString(trimmedStdin) || macroNumLinesRegex.MatchString(trimmedStdin) || macroJsonEscapeRegex.MatchString(trimmedStdin) {
+					return "", fmt.Errorf("cannot use pagination or escaping attributes (skip_lines, num_lines, json_escape) with binary scratchpad entry %q", binaryID)
+				}
+
+				filePath, _, _, err := findScratchpadFile(agentDir, binaryID)
+				if err != nil {
+					return "", err
+				}
+				f, err := os.Open(filePath)
+				if err != nil {
+					return "", fmt.Errorf("failed to open binary scratchpad entry %q: %w", binaryID, err)
+				}
+				stdinFile = f
+				cmd.Stdin = stdinFile
+			}
 		}
-		cmd.Stdin = strings.NewReader(expandedStdin)
+
+		if stdinFile == nil {
+			expandedStdin, err := ExpandScratchpadMacros(agentDir, args.Stdin)
+			if err != nil {
+				return "", err
+			}
+			cmd.Stdin = strings.NewReader(expandedStdin)
+		}
 	} else if len(args.Args) > 0 || len(args.Env) > 0 {
 		argsJSON, err := json.Marshal(args)
 		if err == nil {
 			cmd.Stdin = bytes.NewReader(argsJSON)
 			cmd.Env = append(cmd.Env, "WACKYPUB_TOOL_ARGS="+string(argsJSON))
 		}
+	}
+
+	if stdinFile != nil {
+		defer stdinFile.Close()
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -338,7 +430,14 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	stderrBytes := stderr.Bytes()
 
 	var stdoutBlock string
-	if len(stdoutBytes) > ScratchpadOutputThreshold {
+	if isBinary, mimeType := DetectMediaType(stdoutBytes); isBinary {
+		// D48: Binary stdout is always routed to a .dat scratchpad entry regardless of size
+		entry, err := CreateBinaryScratchpad(agentDir, stdoutBytes, "run_command", mimeType)
+		if err != nil {
+			return "", fmt.Errorf("failed to create binary stdout scratchpad entry: %w", err)
+		}
+		stdoutBlock = fmt.Sprintf("<STDOUT><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"0\" mime=%q /></STDOUT>", entry.ID, entry.Size, mimeType)
+	} else if len(stdoutBytes) > ScratchpadOutputThreshold {
 		entry, err := CreateScratchpad(agentDir, string(stdoutBytes), "run_command")
 		if err != nil {
 			return "", fmt.Errorf("failed to create stdout scratchpad entry: %w", err)
@@ -351,7 +450,14 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 	}
 
 	var stderrBlock string
-	if len(stderrBytes) > ScratchpadOutputThreshold {
+	if isBinary, mimeType := DetectMediaType(stderrBytes); isBinary {
+		// D48: Binary stderr is always routed to a .dat scratchpad entry regardless of size
+		entry, err := CreateBinaryScratchpad(agentDir, stderrBytes, "run_command", mimeType)
+		if err != nil {
+			return "", fmt.Errorf("failed to create binary stderr scratchpad entry: %w", err)
+		}
+		stderrBlock = fmt.Sprintf("<STDERR><SCRATCHPAD_DATA id=%q size=\"%d\" lines=\"0\" mime=%q /></STDERR>", entry.ID, entry.Size, mimeType)
+	} else if len(stderrBytes) > ScratchpadOutputThreshold {
 		entry, err := CreateScratchpad(agentDir, string(stderrBytes), "run_command")
 		if err != nil {
 			return "", fmt.Errorf("failed to create stderr scratchpad entry: %w", err)
@@ -363,7 +469,9 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 	output := stdoutBlock + stderrBlock
 	return output, nil
-} // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
+}
+
+// FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
 type FolderAgent struct {
 	AgentID       string
 	AgentDir      string

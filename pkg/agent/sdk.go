@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -64,6 +65,68 @@ func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
 
 	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user")
 	return nil
+}
+
+// AddMedia appends a normalized, resized JPEG image turn read from reader to
+// <ws_dir>/<agent_id>/session.jsonl according to D47.
+// Gated by runtime.json's maxImageDimension field — returns an error if
+// maxImageDimension is absent or <= 0.
+func (s *AgentSDK) AddMedia(agentID string, reader io.Reader) (*genai.Content, error) {
+	if agentID == "" {
+		return nil, fmt.Errorf("agentID cannot be empty")
+	}
+	if reader == nil {
+		return nil, fmt.Errorf("image reader cannot be nil")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create agent directory %s: %w", agentDir, err)
+	}
+
+	lock, err := AcquireSessionLock(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to acquire session lock: %w", err)
+	}
+	defer lock.Release()
+
+	runtimeCfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load runtime config for agent %q: %w", agentID, err)
+	}
+	if runtimeCfg.MaxImageDimension <= 0 {
+		return nil, fmt.Errorf("image attachments disabled by runtime config for agent %q (maxImageDimension is not set or <= 0)", agentID)
+	}
+
+	jpegBytes, mimeType, err := NormalizeAndResizeImage(reader, runtimeCfg.MaxImageDimension)
+	if err != nil {
+		return nil, fmt.Errorf("failed to process image attachment for agent %q: %w", agentID, err)
+	}
+
+	content := &genai.Content{
+		Role: "user",
+		Parts: []*genai.Part{
+			{
+				InlineData: &genai.Blob{
+					MIMEType: mimeType,
+					Data:     jpegBytes,
+				},
+			},
+		},
+	}
+
+	if err := AppendSessionContent(agentDir, content); err != nil {
+		return nil, fmt.Errorf("failed to append image turn: %w", err)
+	}
+
+	_ = CommitWorkspaceEvent(s.WorkspaceDir, agentID, "user (media)")
+	return content, nil
 }
 
 // GenerateTurn loads the folder agent, checks for compaction, generates the next assistant turn,
@@ -401,6 +464,25 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 
 	agentDir := s.AgentDir(agentID)
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
+}
+
+// DeleteScratchpad removes a scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
+func (s *AgentSDK) DeleteScratchpad(agentID string, entryID string) error {
+	if agentID == "" {
+		return fmt.Errorf("agentID cannot be empty")
+	}
+	if entryID == "" {
+		return fmt.Errorf("entryID cannot be empty")
+	}
+
+	cleanup, err := ValidateAgentTarget(agentID)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	agentDir := s.AgentDir(agentID)
+	return DeleteScratchpad(agentDir, entryID)
 }
 
 // Trace performs backward causal tracing starting from an agent commit specifier or global trace ID according to D36.

@@ -126,15 +126,26 @@ func ContentText(c *genai.Content) string {
 // the model on every subsequent request for backends that preserve thinking.
 func EstimateTokens(turns []*genai.Content, includeThinking bool) int {
 	totalChars := 0
+	imageTokens := 0
 	for _, t := range turns {
+		if t == nil {
+			continue
+		}
 		if includeThinking {
 			totalChars += len(contentTextAll(t))
 		} else {
 			totalChars += len(ContentText(t))
 		}
+		for _, p := range t.Parts {
+			if p != nil && p.InlineData != nil && len(p.InlineData.Data) > 0 {
+				rawLen := len(p.InlineData.Data)
+				b64Len := (rawLen + 2) / 3 * 4
+				imageTokens += b64Len / 150
+			}
+		}
 	}
-	// Heuristic: ~4 characters per token
-	return totalChars / 4
+	// Heuristic: ~4 characters per token + per-image tokens
+	return (totalChars / 4) + imageTokens
 }
 
 // contentTextAll extracts the concatenated text from all of a genai.Content's

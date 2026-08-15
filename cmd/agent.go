@@ -94,6 +94,58 @@ does not already exist.`,
 	},
 }
 
+// wackypub agent <agent_id> add-media OR wackypub agent add-media <agent_id>
+var agentAddMediaCmd = &cobra.Command{
+	Use:   "add-media [agent_id]",
+	Short: "Attach an image from standard input to the agent's session history",
+	Long: `Reads image bytes from standard input (stdin), resizes/normalizes the image to JPEG format,
+and appends it as a user-role image turn to <ws_dir>/<agent_id>/session.jsonl per D47.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Image bytes MUST be provided via stdin pipe (e.g. "wackypub agent <agent_id> add-media < photo.jpg").
+No file-path flags or parameters are accepted, maintaining strict security isolation.
+
+Gated by maxImageDimension in runtime.json - if maxImageDimension is absent or <= 0, image attachments
+are rejected outright. Resizes downscale-only so the longer side does not exceed maxImageDimension.
+Transparencies in PNG/GIF inputs are flattened onto a white background before JPEG encoding.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID string
+		if len(args) >= 1 {
+			agentID = args[0]
+		}
+
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> add-media < image.jpg")
+		}
+
+		stat, _ := os.Stdin.Stat()
+		if (stat.Mode() & os.ModeCharDevice) != 0 {
+			return fmt.Errorf("no image data provided on stdin. Pipe an image file, e.g.: wackypub agent %s add-media < image.jpg", agentID)
+		}
+
+		content, err := sdk.AddMedia(agentID, os.Stdin)
+		if err != nil {
+			return err
+		}
+
+		var rawSize int
+		if len(content.Parts) > 0 && content.Parts[0].InlineData != nil {
+			rawSize = len(content.Parts[0].InlineData.Data)
+		}
+
+		fmt.Printf("Added image attachment (%d bytes JPEG) to agent %q session (%s/session.jsonl).\n", rawSize, agentID, sdk.AgentDir(agentID))
+		return nil
+	},
+}
+
 // wackypub agent <agent_id> generate OR wackypub agent generate <agent_id>
 var agentGenerateCmd = &cobra.Command{
 	Use:   "generate [agent_id]",
@@ -440,7 +492,7 @@ what's printed, though it is still persisted to session.jsonl).`,
 var scratchpadCmd = &cobra.Command{
 	Use:   "scratchpad",
 	Short: "Manage persistent scratchpad entries for an agent (<ws_dir>/<agent_id>/scratchpad/)",
-	Long:  "Create, read, list, and search persistent scratchpad entries stored in <ws_dir>/<agent_id>/scratchpad/.",
+	Long:  "Create, read, list, search, and delete persistent scratchpad entries stored in <ws_dir>/<agent_id>/scratchpad/.",
 }
 
 var scratchpadCreateCmd = &cobra.Command{
@@ -509,13 +561,13 @@ var (
 var scratchpadReadCmd = &cobra.Command{
 	Use:   "read [agent_id] <entry_id>",
 	Short: "Read stored text from an agent's scratchpad entry",
-	Long: `Retrieves stored text content from <ws_dir>/<agent_id>/scratchpad.json by entry ID.
+	Long: `Retrieves stored text content from <ws_dir>/<agent_id>/scratchpad/ by entry ID.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
   entry_id   Required. The 4-character scratchpad entry ID to read.
 
-Pass --skip-lines N and/or --num-lines M for line-based pagination. Does not acquire the session lock (read-only against atomic temp-file replace).`,
+Pass --skip-lines N and/or --num-lines M for line-based pagination. Rejects binary (.dat) entries outright per D48.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -554,12 +606,12 @@ Pass --skip-lines N and/or --num-lines M for line-based pagination. Does not acq
 var scratchpadListCmd = &cobra.Command{
 	Use:   "list [agent_id]",
 	Short: "List all live scratchpad entries for an agent",
-	Long: `Lists metadata (ID, size, created_by), ordered oldest-first by mtime, and capacity usage for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad/.
+	Long: `Lists metadata (ID, size, lines, created_by, is_binary, mime_type), ordered oldest-first by mtime, and capacity usage for all live scratchpad entries in <ws_dir>/<agent_id>/scratchpad/.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
 
-Outputs JSON metadata. Does not acquire the session lock (read-only against atomic temp-file replace).`,
+Outputs JSON metadata. Does not acquire the session lock.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -601,8 +653,8 @@ var (
 
 var scratchpadSearchCmd = &cobra.Command{
 	Use:   "search [agent_id] <entry_id> <query>",
-	Short: "Search a scratchpad entry for matching lines",
-	Long: `Searches a specific scratchpad entry in <ws_dir>/<agent_id>/scratchpad.json for matching lines.
+	Short: "Search a text scratchpad entry for matching lines",
+	Long: `Searches a specific text scratchpad entry in <ws_dir>/<agent_id>/scratchpad/ for matching lines.
 
 Arguments:
   agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
@@ -610,7 +662,7 @@ Arguments:
   query      Required. The text substring or regex pattern to search for.
 
 Returns 1-indexed line numbers, precomputed skip_lines for get_scratchpad pagination, and truncated line text.
-Does not acquire the session lock (read-only against atomic temp-file replace).`,
+Rejects binary (.dat) entries outright per D48.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		wsDir, err := GetWorkspaceDir()
 		if err != nil {
@@ -642,7 +694,37 @@ Does not acquire the session lock (read-only against atomic temp-file replace).`
 	},
 }
 
-// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|generate|prompt|...>" syntax.
+var scratchpadDeleteCmd = &cobra.Command{
+	Use:   "delete [agent_id] <entry_id>",
+	Short: "Delete a scratchpad entry by ID",
+	Long: `Deletes a specific text (.txt) or binary (.dat) scratchpad entry from <ws_dir>/<agent_id>/scratchpad/ per D48.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+  entry_id   Required. The 4-character scratchpad entry ID to delete.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		if len(args) < 2 {
+			return fmt.Errorf("agent_id and entry_id are required. Usage: wackypub agent <agent_id> scratchpad delete <entry_id>")
+		}
+		agentID := args[0]
+		entryID := args[1]
+
+		if err := sdk.DeleteScratchpad(agentID, entryID); err != nil {
+			return err
+		}
+
+		fmt.Printf("Deleted scratchpad entry %q for agent %q.\n", entryID, agentID)
+		return nil
+	},
+}
+
+// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|add-media|generate|prompt|...>" syntax.
 func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 	if len(args) >= 2 {
 		agentID := args[0]
@@ -654,6 +736,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				remainingArgs = append(remainingArgs, args[2:]...)
 			}
 			return agentAddCmd.RunE(cmd, remainingArgs)
+		} else if subCmd == "add-media" {
+			return agentAddMediaCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "generate" {
 			return agentGenerateCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "prompt" || subCmd == "turn" {
@@ -690,6 +774,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				return scratchpadListCmd.RunE(cmd, rem)
 			case "search":
 				return scratchpadSearchCmd.RunE(cmd, rem)
+			case "delete":
+				return scratchpadDeleteCmd.RunE(cmd, rem)
 			default:
 				return scratchpadCmd.Help()
 			}
@@ -720,10 +806,12 @@ func init() {
 	scratchpadCmd.AddCommand(scratchpadReadCmd)
 	scratchpadCmd.AddCommand(scratchpadListCmd)
 	scratchpadCmd.AddCommand(scratchpadSearchCmd)
+	scratchpadCmd.AddCommand(scratchpadDeleteCmd)
 
 	agentCmd.RunE = executeAgentDispatcher
 
 	agentCmd.AddCommand(agentAddCmd)
+	agentCmd.AddCommand(agentAddMediaCmd)
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
 	agentCmd.AddCommand(agentStripSignaturesCmd)
