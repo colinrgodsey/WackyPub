@@ -26,11 +26,6 @@ if [ ! -d "$REPO_ROOT/container-ws" ]; then
     "$SCRIPT_DIR/init_container_env.sh" "$1"
 fi
 
-# Keep repl.sh in sync with the repo's copy even on later runs, not just
-# first-time init.
-cp "$SCRIPT_DIR/repl.sh" "$REPO_ROOT/container-ws/repl.sh"
-chmod +x "$REPO_ROOT/container-ws/repl.sh"
-
 echo "Building wackypub..."
 GOOS=linux go build -o wackypub .
 
@@ -55,4 +50,4 @@ else
 fi
 
 echo "Attaching to main's REPL..."
-exec docker exec -it "$CONTAINER_NAME" /ws/repl.sh main
+exec docker exec -it "$CONTAINER_NAME" wackypub agent main repl

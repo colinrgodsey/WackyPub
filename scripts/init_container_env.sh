@@ -58,7 +58,4 @@ ln -s ../runtime.json main/runtime.json
 ln -s ../runtime.json sub1/runtime.json
 ln -s ../runtime.json sub2/runtime.json
 
-cp "$SCRIPT_DIR/repl.sh" repl.sh
-chmod +x repl.sh
-
 echo "Initialized container-ws/ (main, sub1, sub2) using $RUNTIME_JSON_PATH"

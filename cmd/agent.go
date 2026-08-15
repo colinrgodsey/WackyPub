@@ -488,6 +488,72 @@ what's printed, though it is still persisted to session.jsonl).`,
 	},
 }
 
+// wackypub agent <agent_id> repl OR wackypub agent repl <agent_id>
+var agentReplCmd = &cobra.Command{
+	Use:   "repl [agent_id]",
+	Short: "Interactive read-eval-print loop for driving an agent by hand",
+	Long: `Reads lines from stdin in a loop, appending each as a user turn and generating/printing
+the agent's response - the interactive way to drive an agent without quoting every message
+through a separate "wackypub agent prompt" call.
+
+Arguments:
+  agent_id   Required. Identifies the agent directory (<ws_dir>/<agent_id>).
+
+Type "exit" or "quit", or press Ctrl+D, to end the session. Blank lines are ignored. A failed
+turn prints an error and continues the loop rather than exiting.
+
+Refuses to run when the current directory is an agent's own directory (same detection D41
+uses for trace/workspace snapshot/tag/push) - this is an interactive tool for a human at a
+real terminal, not something an agent should invoke on itself via run_command.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := refuseIfAgentContext("wackypub agent repl"); err != nil {
+			return err
+		}
+
+		wsDir, err := GetWorkspaceDir()
+		if err != nil {
+			return err
+		}
+		sdk := newSDK(wsDir)
+
+		var agentID string
+		if len(args) >= 1 {
+			agentID = args[0]
+		}
+		if agentID == "" {
+			return fmt.Errorf("agent_id is required. Usage: wackypub agent <agent_id> repl")
+		}
+
+		fmt.Printf("wackypub REPL - agent %q. Type \"exit\"/\"quit\" or press Ctrl+D to end.\n", agentID)
+		ctx := context.Background()
+		scanner := bufio.NewScanner(os.Stdin)
+		scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+		for {
+			fmt.Printf("%s> ", agentID)
+			if !scanner.Scan() {
+				fmt.Println()
+				break
+			}
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" {
+				continue
+			}
+			if line == "exit" || line == "quit" {
+				break
+			}
+
+			respText, err := sdk.AddAndGenerateTurn(ctx, agentID, line)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				continue
+			}
+			fmt.Println(respText)
+			fmt.Println()
+		}
+		return nil
+	},
+}
+
 // wackypub agent <id> scratchpad ... OR wackypub agent scratchpad ...
 var scratchpadCmd = &cobra.Command{
 	Use:   "scratchpad",
@@ -724,7 +790,7 @@ Arguments:
 	},
 }
 
-// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|add-media|generate|prompt|...>" syntax.
+// ExecuteAgentDispatcher handles positional "wackypub agent <agent_id> <add|add-media|generate|prompt|repl|...>" syntax.
 func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 	if len(args) >= 2 {
 		agentID := args[0]
@@ -746,6 +812,8 @@ func executeAgentDispatcher(cmd *cobra.Command, args []string) error {
 				remainingArgs = append(remainingArgs, args[2:]...)
 			}
 			return agentPromptCmd.RunE(cmd, remainingArgs)
+		} else if subCmd == "repl" {
+			return agentReplCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "strip-signatures" {
 			return agentStripSignaturesCmd.RunE(cmd, []string{agentID})
 		} else if subCmd == "read-session" {
@@ -814,6 +882,7 @@ func init() {
 	agentCmd.AddCommand(agentAddMediaCmd)
 	agentCmd.AddCommand(agentGenerateCmd)
 	agentCmd.AddCommand(agentPromptCmd)
+	agentCmd.AddCommand(agentReplCmd)
 	agentCmd.AddCommand(agentStripSignaturesCmd)
 	agentCmd.AddCommand(agentReadSessionCmd)
 	agentCmd.AddCommand(agentReadMemoryCmd)
