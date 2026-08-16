@@ -63,6 +63,22 @@ worth keeping as a record, but neither alone earns `y` or `n`.
   see the "no-bash swarm re-test" entry in `TODOS.md`. Pending a fresh
   swarm run against the current state.
 
+- **`?` `wackyproc`** (`tools/wackyproc/` submodule, [colinrgodsey/wackyproc](https://github.com/colinrgodsey/wackyproc)) - zero-daemon background
+  process manager (see DECISIONS.md D51): spawns/tracks detached
+  processes under `.proc/<id>/`, resolving target tools strictly against
+  `<cwd>/tools/<tool>` (no `$PATH` fallback). No swarm pass yet. Two review
+  gaps found and fixed before landing (independently re-verified, not just
+  taken on report): an `os.Stat` + `os.MkdirAll` TOCTOU on candidate process
+  IDs, resolved via atomic `ClaimUniqueProcessDir` (`os.Mkdir` returning
+  `os.ErrExist` on collision with retry, matching scratchpad `O_CREATE|O_EXCL`
+  semantics); and a narrower race where a child that had just died but whose
+  supervisor hadn't yet finished writing `exit_code` could get misreported as
+  `CRASHED`, fixed by checking the recorded supervisor PID is still alive
+  before concluding a crash. Worth a swarm run once this settles, plus
+  attention to whether the two safeguards the original design doc called
+  for and this pass didn't ship - `flock` on concurrent state read/write, and
+  log rotation/capping for long-running processes - are worth adding before then.
+
 ## Not yet on this list
 
 Anything that shells out to an external command with agent-influenced

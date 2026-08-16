@@ -75,11 +75,12 @@ same implementation and documentation without duplicating either.
 ```bash
 go build -o bin/wackypub .
 (cd tools/files-rw && go build -o ../../bin/files-rw .)
+(cd tools/wackyproc && go build -o ../../bin/wackyproc .)
 go test ./...
 go vet ./...
 ```
 
-`tools/files-rw` is a git submodule (its own repo, [colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) - run `git submodule update --init` after cloning if it's empty.
+`tools/files-rw` ([colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) and `tools/wackyproc` ([colinrgodsey/wackyproc](https://github.com/colinrgodsey/wackyproc)) are git submodules - run `git submodule update --init` after cloning if they are empty.
 
 ### Module Management
 
