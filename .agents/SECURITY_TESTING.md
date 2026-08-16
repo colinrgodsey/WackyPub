@@ -50,7 +50,7 @@ worth keeping as a record, but neither alone earns `y` or `n`.
 
 ## Checklist
 
-- **`?` `files-rw`** (`pkg/filesrw/`) - filesystem read/write/edit/patch/
+- **`?` `files-rw`** (`tools/files-rw/` submodule, [colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) - filesystem read/write/edit/patch/
   copy/move/delete/list gated by a per-directory `FILES_RW_ACCESS`
   allowlist (see DECISIONS.md D22-D26). The `n` report from the second
   swarm run is deleted per the invalidation rule - D24's findings drove a

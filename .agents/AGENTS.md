@@ -74,10 +74,12 @@ same implementation and documentation without duplicating either.
 
 ```bash
 go build -o bin/wackypub .
-go build -o bin/files-rw ./cmd/files-rw
+(cd tools/files-rw && go build -o ../../bin/files-rw .)
 go test ./...
 go vet ./...
 ```
+
+`tools/files-rw` is a git submodule (its own repo, [colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) - run `git submodule update --init` after cloning if it's empty.
 
 ### Module Management
 
@@ -161,7 +163,7 @@ this command" a one-second lookup instead of a grep.
 
 ### Build binaries into `./bin`
 
-When building binaries locally for manual testing, verification, or symlinking (e.g. `wackypub`, `files-rw`), always output them to `./bin` (e.g. `go build -o bin/wackypub .` or `go build -o bin/files-rw ./cmd/files-rw`). `./bin` is gitignored so built binaries won't clutter `git status` or accidentally get committed, and provides a single predictable location for symlinks and executable targets.
+When building binaries locally for manual testing, verification, or symlinking (e.g. `wackypub`, `files-rw`), always output them to `./bin` (e.g. `go build -o bin/wackypub .` or, for the `tools/files-rw` submodule, `cd tools/files-rw && go build -o ../../bin/files-rw .`). `./bin` is gitignored so built binaries won't clutter `git status` or accidentally get committed, and provides a single predictable location for symlinks and executable targets.
 
 ### Concurrency should always be heavily considered
 
