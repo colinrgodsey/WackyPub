@@ -1,0 +1,3 @@
+[submodule "tools/files-rw"]
+	path = tools/files-rw
+	url = git@github.com:colinrgodsey/files-rw.git
