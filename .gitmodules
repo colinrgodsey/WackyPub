@@ -1,3 +1,6 @@
 [submodule "tools/files-rw"]
 	path = tools/files-rw
 	url = git@github.com:colinrgodsey/files-rw.git
+[submodule "tools/wackyproc"]
+	path = tools/wackyproc
+	url = git@github.com:colinrgodsey/wackyproc.git
