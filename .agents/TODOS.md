@@ -565,23 +565,16 @@ struct in memory instead of going through this path at all), but worth
 deciding whether `OpenFile` should get the same early bypass `Resolve`
 has, or whether `Resolve`'s bypass is the one that's actually wrong.
 
-## Should `run_command` gain a timeout?
+## `run_command` should get real integration-level tests once a timeout/process-group harness exists (D52 follow-up)
 
-Parked during D51's (`wackyproc`) design discussion - genuine, unresolved
-tension, not just unprioritized. A hard safety-net timeout would recover
-from an agent accidentally running something that blocks forever on an
-interactive prompt (`apt install` without `-y`, an unflagged `git
-rebase`) - today that just hangs the calling process indefinitely, with
-no automatic recovery. But the right duration is inherently a guess, and
-a timeout that fires on a legitimate-but-slow command is its own kind of
-friction - general dislike of timeouts in agent platforms as a category,
-weighed against this one real failure mode being worth guarding against.
-
-Doesn't block `wackyproc` (D51) either way - a `wackyproc`-specific skill
-can nudge agents toward `wackyproc run` for anything expected to be slow
-regardless of what core `run_command` ends up doing. If/when this gets
-picked back up: whatever timeout mechanism lands should kill the whole
-process group, not just the root PID (same discipline `wackyproc`'s own
-`stop` already needs, to avoid orphaning children) - and the error
-message should stay generic, not hardcode a mention of `wackyproc` or
-any other specific companion tool by name.
+D52 adds `Setpgid: true` isolation and a configurable timeout to
+`executeTool`, fixing an observed zombie-process gap and giving
+operators a way to recover from a hung command. Worth a dedicated test
+pass once implemented that specifically exercises: a command that
+spawns its own children and gets killed via timeout (verifying the
+whole group dies, not just the root PID - the actual bug being fixed,
+easy to silently regress since a naive test might only check the root
+process died); `-1` genuinely disabling the timeout; and the three-way
+precedence (flag > env var > default) actually resolving correctly,
+mirroring the rigor `wackyproc`'s own `TestRun_Concurrent`-style tests
+already established for a similar isolation guarantee.
