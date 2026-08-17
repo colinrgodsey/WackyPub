@@ -118,6 +118,7 @@ Every security-relevant tool is tracked in a 3-state checklist ([`.agents/SECURI
 A few tools worth linking into `tools/` for a real workspace, not just the demo:
 
 - **[files-rw](https://github.com/colinrgodsey/files-rw)** (recommended) — our own file access/editing suite, gated by a per-directory allowlist. Vendored here as a git submodule at `tools/files-rw`; see [Security](#security) above for its actual track record, not just a claim.
+- **[wackyproc](https://github.com/colinrgodsey/wackyproc)** (recommended) — our own zero-daemon background process manager, for spawning long-running work (builds, test suites, servers) that would otherwise block a whole turn on `run_command`, and checking back on it across turns. Vendored here as a git submodule at `tools/wackyproc`.
 - **`wackypub` itself** (recommended) — yes, really. Linking `wackypub` into an agent's own `tools/` is what makes agent-to-agent calling possible in the first place (see [Philosophy](#philosophy)) - not a special integration, just another executable an agent happens to invoke. Necessary for any workspace that wants real cross-agent orchestration, not optional the way the rest of this list is.
 - **[QMD](https://github.com/tobi/qmd)** — on-device search built by Tobi Lütke (Shopify), giving agents local RAG over Markdown, notes, and docs: BM25 keyword search, vector semantic search, and LLM re-ranking, all in one local binary.
 - **[ast-grep](https://github.com/ast-grep/ast-grep)** — structural code search and rewriting via AST matching instead of regex.

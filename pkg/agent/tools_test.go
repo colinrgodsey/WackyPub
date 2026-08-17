@@ -40,6 +40,35 @@ func TestExecuteTool(t *testing.T) {
 	}
 }
 
+// TestExecuteTool_NoStdinEchoWithoutExplicitStdin confirms D53: a tool called
+// with Args but no explicit Stdin gets no stdin at all (reads EOF
+// immediately), not a WACKYPUB_TOOL_ARGS-shaped JSON echo of its own
+// invocation - that fallback used to feed every Args/Env-bearing call some
+// stdin whether the caller wanted it or not, discovered live via wackyproc
+// (a tool that itself forwards its own stdin to a spawned child) treating
+// that echoed JSON as real input to relay.
+func TestExecuteTool_NoStdinEchoWithoutExplicitStdin(t *testing.T) {
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "read_stdin.sh")
+	script := "#!/bin/sh\ndata=$(cat)\necho \"stdin was: [$data]\"\necho \"env was: [$WACKYPUB_TOOL_ARGS]\"\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	args := ExecToolArgs{Args: []string{"some", "args"}}
+	output, err := executeTool(context.Background(), agentDir, "read_stdin.sh", toolPath, args)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(output, "stdin was: []") {
+		t.Errorf("expected empty stdin (immediate EOF), got: %q", output)
+	}
+	if !strings.Contains(output, "env was: []") {
+		t.Errorf("expected WACKYPUB_TOOL_ARGS to be unset, got: %q", output)
+	}
+}
+
 func TestExecuteTool_SymlinkResolution(t *testing.T) {
 	tmpDir := t.TempDir()
 	targetDir := filepath.Join(tmpDir, "real_target")

@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -453,13 +452,14 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 			}
 			cmd.Stdin = strings.NewReader(expandedStdin)
 		}
-	} else if len(args.Args) > 0 || len(args.Env) > 0 {
-		argsJSON, err := json.Marshal(args)
-		if err == nil {
-			cmd.Stdin = bytes.NewReader(argsJSON)
-			cmd.Env = append(cmd.Env, "WACKYPUB_TOOL_ARGS="+string(argsJSON))
-		}
 	}
+	// No explicit stdin: leave cmd.Stdin unset (spawned tool gets /dev/null,
+	// exec.Cmd's own default) rather than echoing the raw call args in as a
+	// side channel - see D53, this used to feed a WACKYPUB_TOOL_ARGS-shaped
+	// JSON blob into every tool's stdin unconditionally whenever Args/Env
+	// were non-empty, with no documented reason and no way for a wrapper
+	// tool like wackyproc to distinguish it from stdin the agent actually
+	// meant to pipe through.
 
 	if stdinFile != nil {
 		defer stdinFile.Close()
