@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"iter"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/tool"
@@ -395,5 +399,133 @@ func TestSearchScratchpad(t *testing.T) {
 	}
 	if len(resCap.Matches) != 2 {
 		t.Errorf("expected len(Matches) 2 due to cap, got %d", len(resCap.Matches))
+	}
+}
+
+func TestExecuteTool_Timeout(t *testing.T) {
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "sleep_tool.sh")
+	script := "#!/bin/sh\nsleep 5\necho done\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	_, err := executeTool(context.Background(), agentDir, "sleep_tool.sh", toolPath, ExecToolArgs{}, 1)
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool sleep_tool.sh timed out after 1 seconds") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestExecuteTool_ProcessGroupKill(t *testing.T) {
+	agentDir := t.TempDir()
+	pidFile := filepath.Join(agentDir, "bg.pid")
+	toolPath := filepath.Join(agentDir, "bg_spawn.sh")
+
+	// Script spawns a background sleeper, writes its PID to bg.pid, and sleeps forever
+	script := fmt.Sprintf("#!/bin/sh\nsleep 30 &\necho $! > %s\nsleep 30\n", pidFile)
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	_, err := executeTool(context.Background(), agentDir, "bg_spawn.sh", toolPath, ExecToolArgs{}, 1)
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "tool bg_spawn.sh timed out after 1 seconds") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// Read background PID from pidFile
+	pidData, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatalf("failed to read bg.pid: %v", err)
+	}
+	bgPidStr := strings.TrimSpace(string(pidData))
+	bgPid, err := strconv.Atoi(bgPidStr)
+	if err != nil {
+		t.Fatalf("invalid PID in bg.pid: %q", bgPidStr)
+	}
+
+	// Give the OS a tiny slice to process the SIGKILL
+	time.Sleep(50 * time.Millisecond)
+
+	// Check if background process is alive via syscall.Kill(bgPid, 0)
+	if err := syscall.Kill(bgPid, 0); err == nil {
+		t.Errorf("background process %d is still alive, expected it to be killed with process group", bgPid)
+		// Clean up leaked process if test failed
+		_ = syscall.Kill(bgPid, syscall.SIGKILL)
+	}
+}
+
+func TestExecuteTool_TimeoutDisabled(t *testing.T) {
+	agentDir := t.TempDir()
+	toolPath := filepath.Join(agentDir, "quick.sh")
+	script := "#!/bin/sh\necho quick_done\n"
+	if err := os.WriteFile(toolPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failed to write tool script: %v", err)
+	}
+
+	// timeout = -1 disables timeout wrapping
+	out, err := executeTool(context.Background(), agentDir, "quick.sh", toolPath, ExecToolArgs{}, -1)
+	if err != nil {
+		t.Fatalf("unexpected error with timeout disabled (-1): %v", err)
+	}
+	if !strings.Contains(out, "quick_done") {
+		t.Fatalf("expected 'quick_done' in output, got: %q", out)
+	}
+}
+
+func TestCommandTimeout_Precedence(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(`{"model":"dummy-model","endpoint":"http://localhost:1234/v1"}`), 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// 1. Default (no arg, no env var) -> 900
+	_ = os.Unsetenv(EnvCommandTimeoutSeconds)
+	fa1, err := LoadFolderAgent(wsDir, "bob", 1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	if fa1.CommandTimeoutSeconds != DefaultCommandTimeoutSeconds {
+		t.Errorf("expected default timeout %d, got %d", DefaultCommandTimeoutSeconds, fa1.CommandTimeoutSeconds)
+	}
+
+	// 2. Env var precedence when arg is not supplied (or 0)
+	t.Setenv(EnvCommandTimeoutSeconds, "42")
+	fa2, err := LoadFolderAgent(wsDir, "bob", 1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	if fa2.CommandTimeoutSeconds != 42 {
+		t.Errorf("expected env timeout 42, got %d", fa2.CommandTimeoutSeconds)
+	}
+
+	// 3. Explicit argument precedence over env var
+	fa3, err := LoadFolderAgent(wsDir, "bob", 1, 100)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	if fa3.CommandTimeoutSeconds != 100 {
+		t.Errorf("expected explicit timeout 100, got %d", fa3.CommandTimeoutSeconds)
+	}
+
+	// 4. Disabling timeout (-1) as explicit arg over env var
+	fa4, err := LoadFolderAgent(wsDir, "bob", 1, -1)
+	if err != nil {
+		t.Fatalf("LoadFolderAgent failed: %v", err)
+	}
+	if fa4.CommandTimeoutSeconds != -1 {
+		t.Errorf("expected disabled timeout -1, got %d", fa4.CommandTimeoutSeconds)
 	}
 }

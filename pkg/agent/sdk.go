@@ -12,8 +12,9 @@ import (
 
 // AgentSDK provides a clean, programmatic Go API for orchestrating folder-based agents.
 type AgentSDK struct {
-	WorkspaceDir string
-	MaxToolTurns int
+	WorkspaceDir          string
+	MaxToolTurns          int
+	CommandTimeoutSeconds int
 }
 
 // NewSDK creates an SDK instance bound to a workspace directory.
@@ -22,8 +23,9 @@ func NewSDK(workspaceDir string) *AgentSDK {
 		workspaceDir = "."
 	}
 	return &AgentSDK{
-		WorkspaceDir: workspaceDir,
-		MaxToolTurns: DefaultMaxToolTurns,
+		WorkspaceDir:          workspaceDir,
+		MaxToolTurns:          DefaultMaxToolTurns,
+		CommandTimeoutSeconds: DefaultCommandTimeoutSeconds,
 	}
 }
 
@@ -149,7 +151,7 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
 	}
@@ -194,7 +196,7 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	}
 
 	// 2. Load Folder Agent & Generate Assistant Turn
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
 	}
@@ -215,7 +217,7 @@ func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
 	}
 	defer cleanup()
 
-	return LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
+	return LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
 }
 
 // ListAgents returns the IDs of agent directories found directly under the
@@ -376,7 +378,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force boo
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns)
+	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return false, err
 	}

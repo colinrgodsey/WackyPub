@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -12,12 +13,13 @@ import (
 )
 
 var (
-	cfgFile      string
-	workspaceDir string
-	modelName    string
-	apiKey       string
-	maxToolTurns int
-	cfg          *config.Config
+	cfgFile               string
+	workspaceDir          string
+	modelName             string
+	apiKey                string
+	maxToolTurns          int
+	commandTimeoutSeconds int
+	cfg                   *config.Config
 
 	// BundledA2ASkill holds embedded skills/wackypub-a2a/SKILL.md text passed from main.go (D34).
 	BundledA2ASkill string
@@ -140,6 +142,22 @@ func GetMaxToolTurns() int {
 	return maxToolTurns
 }
 
+// GetCommandTimeoutSeconds returns the configured command execution timeout according to D52 precedence:
+// 1. Explicit CLI flag (--command-timeout-seconds)
+// 2. WACKYPUB_COMMAND_TIMEOUT_SECONDS environment variable
+// 3. DefaultCommandTimeoutSeconds (900)
+func GetCommandTimeoutSeconds() int {
+	if RootCmd.PersistentFlags().Changed("command-timeout-seconds") {
+		return commandTimeoutSeconds
+	}
+	if envVal := os.Getenv(adkAgent.EnvCommandTimeoutSeconds); envVal != "" {
+		if val, err := strconv.Atoi(envVal); err == nil {
+			return val
+		}
+	}
+	return adkAgent.DefaultCommandTimeoutSeconds
+}
+
 // Execute adds all child commands to the root command and sets flags appropriately.
 func Execute() {
 	if err := RootCmd.Execute(); err != nil {
@@ -154,5 +172,6 @@ func init() {
 	RootCmd.PersistentFlags().StringVarP(&modelName, "model", "m", "", "Gemini model override (e.g. gemini-2.5-flash)")
 	RootCmd.PersistentFlags().StringVar(&apiKey, "api-key", "", "Gemini API key override (or GEMINI_API_KEY env var)")
 	RootCmd.PersistentFlags().IntVar(&maxToolTurns, "max-tool-turns", adkAgent.DefaultMaxToolTurns, "Maximum consecutive tool-call turns allowed per generation")
+	RootCmd.PersistentFlags().IntVar(&commandTimeoutSeconds, "command-timeout-seconds", adkAgent.DefaultCommandTimeoutSeconds, "Maximum execution timeout in seconds for tool commands (-1 to disable)")
 	RootCmd.AddCommand(skillCmd)
 }

@@ -4,11 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
@@ -17,6 +21,11 @@ import (
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
+)
+
+const (
+	DefaultCommandTimeoutSeconds = 900
+	EnvCommandTimeoutSeconds     = "WACKYPUB_COMMAND_TIMEOUT_SECONDS"
 )
 
 type CreateScratchpadArgs struct {
@@ -91,9 +100,14 @@ type LoadSkillResult struct {
 
 // BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad)
 // and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
-func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
+func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	toolMap := make(map[string]tool.Tool)
 	var decls []*genai.FunctionDeclaration
+
+	timeoutSeconds := DefaultCommandTimeoutSeconds
+	if len(commandTimeoutSeconds) > 0 {
+		timeoutSeconds = commandTimeoutSeconds[0]
+	}
 
 	addTool := func(t tool.Tool) {
 		toolMap[t.Name()] = t
@@ -250,7 +264,7 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 			Env:   args.Env,
 			Stdin: args.Stdin,
 		}
-		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs)
+		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, timeoutSeconds)
 		if err != nil {
 			return RunCommandResult{}, err
 		}
@@ -309,7 +323,12 @@ func BuildFolderAgentTools(agentDir string) (map[string]tool.Tool, []*genai.Func
 	return toolMap, decls, nil
 }
 
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs) (string, error) {
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, timeoutSeconds ...int) (string, error) {
+	timeout := DefaultCommandTimeoutSeconds
+	if len(timeoutSeconds) > 0 {
+		timeout = timeoutSeconds[0]
+	}
+
 	cmdArgs := make([]string, len(args.Args))
 	for i, rawArg := range args.Args {
 		// Check for binary scratchpad references in args (D48: args reject .dat entries outright)
@@ -345,9 +364,25 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 		absToolPath = evalPath
 	}
 
-	cmd := exec.CommandContext(ctx, absToolPath, cmdArgs...)
+	var execCtx context.Context = ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		execCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+	}
+
+	cmd := exec.CommandContext(execCtx, absToolPath, cmdArgs...)
 	cmd.Dir = agentDir
 	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+	cmd.Cancel = func() error {
+		if cmd.Process != nil && cmd.Process.Pid > 0 {
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
 
 	dotEnv, err := LoadAgentDotEnv(agentDir)
 	if err != nil {
@@ -446,6 +481,9 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 	err = cmd.Run()
 	if err != nil {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("tool %s timed out after %d seconds", toolName, timeout)
+		}
 		errStr := stderr.String()
 		if errStr == "" {
 			errStr = err.Error()
@@ -500,19 +538,20 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 
 // FolderAgent encapsulates an agent loaded from a folder environment (<ws_dir>/<agent_id>).
 type FolderAgent struct {
-	AgentID       string
-	AgentDir      string
-	DotEnv        map[string]string
-	RuntimeConfig *RuntimeConfig
-	SystemPrompt  string
-	MemoryPrompt  string
-	Model         model.LLM
-	ADKAgent      agent.Agent
-	MaxToolTurns  int
+	AgentID               string
+	AgentDir              string
+	DotEnv                map[string]string
+	RuntimeConfig         *RuntimeConfig
+	SystemPrompt          string
+	MemoryPrompt          string
+	Model                 model.LLM
+	ADKAgent              agent.Agent
+	MaxToolTurns          int
+	CommandTimeoutSeconds int
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
-func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAgent, error) {
+func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -522,10 +561,13 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 		return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
 	}
 
-	// 0. Load .env file
+	// 0. Load .env file and populate environment variables
 	dotEnv, err := LoadAgentDotEnv(agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load agent .env: %w", err)
+	}
+	for k, v := range dotEnv {
+		_ = os.Setenv(k, v)
 	}
 
 	// 1. Load runtime.json
@@ -563,8 +605,17 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 		return nil, fmt.Errorf("unsupported provider %q in runtime.json for agent %s (supported: openai, gemini, anthropic)", runtimeCfg.Provider, agentID)
 	}
 
+	resolvedTimeout := DefaultCommandTimeoutSeconds
+	if len(commandTimeoutSeconds) > 0 && commandTimeoutSeconds[0] != 0 {
+		resolvedTimeout = commandTimeoutSeconds[0]
+	} else if envVal := os.Getenv(EnvCommandTimeoutSeconds); envVal != "" {
+		if val, err := strconv.Atoi(envVal); err == nil {
+			resolvedTimeout = val
+		}
+	}
+
 	// 5. Build ADK functiontools for agent
-	adkToolsMap, _, err := BuildFolderAgentTools(agentDir)
+	adkToolsMap, _, err := BuildFolderAgentTools(agentDir, resolvedTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build agent tools: %w", err)
 	}
@@ -584,15 +635,16 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int) (*FolderAge
 	}
 
 	return &FolderAgent{
-		AgentID:       agentID,
-		AgentDir:      agentDir,
-		DotEnv:        dotEnv,
-		RuntimeConfig: runtimeCfg,
-		SystemPrompt:  expandedPrompt,
-		MemoryPrompt:  memoryContent,
-		Model:         llmModel,
-		ADKAgent:      ag,
-		MaxToolTurns:  maxToolTurns,
+		AgentID:               agentID,
+		AgentDir:              agentDir,
+		DotEnv:                dotEnv,
+		RuntimeConfig:         runtimeCfg,
+		SystemPrompt:          expandedPrompt,
+		MemoryPrompt:          memoryContent,
+		Model:                 llmModel,
+		ADKAgent:              ag,
+		MaxToolTurns:          maxToolTurns,
+		CommandTimeoutSeconds: resolvedTimeout,
 	}, nil
 }
 

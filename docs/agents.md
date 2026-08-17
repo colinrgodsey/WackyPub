@@ -384,7 +384,8 @@ If an agent's `session.jsonl` already contains `reasoning_details` block metadat
 
 ### Global Flags
 - `--ws <path>`: Specifies workspace directory. Unspecified walks up from CWD looking for `WACKYPUB_ROOT`.
-- `--max-tool-turns <int>`: Sets maximum consecutive tool-call turn limit per generation (default `10`).
+- `--max-tool-turns <int>`: Sets maximum consecutive tool-call turn limit per generation (default `300`).
+- `--command-timeout-seconds <int>`: Sets maximum execution timeout in seconds for tool commands (`-1` to disable, default `900`). Precedence: CLI flag > `WACKYPUB_COMMAND_TIMEOUT_SECONDS` env var > default (`900`). Spawns each tool in an isolated process group (`Setpgid: true`) and terminates the entire process group upon timeout.
 
 ### Add User Turn (`add`)
 ```bash
@@ -516,7 +517,8 @@ import "github.com/colinrgodsey/wackypub/pkg/agent"
 
 // Initialize SDK for workspace directory
 sdk := agent.NewSDK("./my_workspace")
-sdk.MaxToolTurns = 10 // Optional cap over consecutive tool turns
+sdk.MaxToolTurns = 300 // Optional cap over consecutive tool turns
+sdk.CommandTimeoutSeconds = 900 // Optional tool command execution timeout in seconds (-1 to disable)
 ```
 
 ### SDK Methods

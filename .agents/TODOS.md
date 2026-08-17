@@ -565,16 +565,15 @@ struct in memory instead of going through this path at all), but worth
 deciding whether `OpenFile` should get the same early bypass `Resolve`
 has, or whether `Resolve`'s bypass is the one that's actually wrong.
 
-## `run_command` should get real integration-level tests once a timeout/process-group harness exists (D52 follow-up)
+## `wackyproc` has no `prune`/cleanup command - `.proc/` grows unbounded
 
-D52 adds `Setpgid: true` isolation and a configurable timeout to
-`executeTool`, fixing an observed zombie-process gap and giving
-operators a way to recover from a hung command. Worth a dedicated test
-pass once implemented that specifically exercises: a command that
-spawns its own children and gets killed via timeout (verifying the
-whole group dies, not just the root PID - the actual bug being fixed,
-easy to silently regress since a naive test might only check the root
-process died); `-1` genuinely disabling the timeout; and the three-way
-precedence (flag > env var > default) actually resolving correctly,
-mirroring the rigor `wackyproc`'s own `TestRun_Concurrent`-style tests
-already established for a similar isolation guarantee.
+The original `wackyproc` design doc proposed `prune --max-age`, but the
+final implementation (D51) shipped a deliberately minimal `run`/`list`/
+`wait`/`get` surface (plus `stop`) without it. Unlike wackypub's own
+scratchpad system (a hard 300-entry cap with mtime-based eviction),
+nothing ever removes a `.proc/<id>/` directory once created - a
+long-running workspace that calls `wackyproc run` repeatedly accumulates
+state (meta.json, stdin/stdout/stderr captures, etc.) forever. Not
+urgent - each entry is small and this doesn't affect correctness - but
+worth a `prune` command (or an eviction policy on `run`, mirroring
+`EvictOldestScratchpad`) before `wackyproc` sees heavy real-world use.

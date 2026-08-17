@@ -21,6 +21,7 @@ var (
 func newSDK(wsDir string) *adkAgent.AgentSDK {
 	sdk := adkAgent.NewSDK(wsDir)
 	sdk.MaxToolTurns = GetMaxToolTurns()
+	sdk.CommandTimeoutSeconds = GetCommandTimeoutSeconds()
 	return sdk
 }
 
