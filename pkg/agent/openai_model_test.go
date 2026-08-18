@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -531,5 +532,73 @@ func TestNewOpenAIModel_ReasoningEffortShape(t *testing.T) {
 			}
 			tt.check(t, (*bodies)[0])
 		})
+	}
+}
+
+func TestInspectBobMessages(t *testing.T) {
+	srv, bodies := captureLastRequestBody(t)
+	agentDir := "../../testws/bob"
+	if _, err := os.Stat(agentDir); os.IsNotExist(err) {
+		agentDir = "../../test_agents/bob"
+		if _, err := os.Stat(agentDir); os.IsNotExist(err) {
+			t.Skip("neither testws/bob nor test_agents/bob exists")
+		}
+	}
+	cfg, err := LoadRuntimeConfig(agentDir)
+	if err != nil {
+		t.Fatalf("LoadRuntimeConfig failed: %v", err)
+	}
+	cfg.Endpoint = srv.URL
+
+	sessionTurns, err := ReadSessionTurns(agentDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	memContent, _ := ReadMemoryFile(agentDir)
+	memTurnText := FormatPersistentMemoryTurn(memContent)
+	memContentTurn := genai.NewContentFromText(memTurnText, "user")
+
+	var rawContents []*genai.Content
+	rawContents = append(rawContents, memContentTurn)
+	rawContents = append(rawContents, sessionTurns...)
+	cleaned := CleanSessionTurns(rawContents)
+
+	m := NewOpenAIModel(cfg)
+	generateOnce(t, m, cleaned)
+
+	body := (*bodies)[0]
+	msgs, _ := body["messages"].([]any)
+	var lastAssistantToolCallIDs []string
+	for idx, mAny := range msgs {
+		mMap, _ := mAny.(map[string]any)
+		role, _ := mMap["role"].(string)
+		if role == "assistant" {
+			lastAssistantToolCallIDs = nil
+			if tcs, ok := mMap["tool_calls"].([]any); ok {
+				for _, tcAny := range tcs {
+					if tcMap, ok := tcAny.(map[string]any); ok {
+						if id, ok := tcMap["id"].(string); ok && id != "" {
+							lastAssistantToolCallIDs = append(lastAssistantToolCallIDs, id)
+						}
+					}
+				}
+			}
+		} else if role == "tool" {
+			toolCallID, _ := mMap["tool_call_id"].(string)
+			if toolCallID == "" {
+				t.Errorf("Msg %d [tool] has empty tool_call_id", idx)
+			}
+			var found bool
+			for _, id := range lastAssistantToolCallIDs {
+				if id == toolCallID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("Msg %d [tool] tool_call_id %q was not in last assistant tool_calls %v", idx, toolCallID, lastAssistantToolCallIDs)
+			}
+		}
 	}
 }

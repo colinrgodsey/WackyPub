@@ -401,8 +401,8 @@ wackypub agent <agent_id> generate
 - Loads agent from `<ws_dir>/<agent_id>`.
 - Evaluates compaction triggers.
 - Discovers executable tools in `<ws_dir>/<agent_id>/tools/` and registers them alongside built-in `set_scratchpad`/`get_scratchpad` tools.
-- Executes multi-turn tool calling loop up to `--max-tool-turns` (default 10).
-- Builds request contents and passes them through `MergeConsecutiveUserTurns`.
+- Executes multi-turn tool calling loop up to `--max-tool-turns` (default 300).
+- Builds request contents and passes them through `CleanSessionTurns` (stripping dangling tool responses and merging consecutive user turns).
 - Generates turn by calling the configured `model.LLM` directly.
 - Prints final-answer text to `stdout` (`Thought` parts excluded).
 - Appends generated turns (`genai.Content`) to `<ws_dir>/<agent_id>/session.jsonl`.

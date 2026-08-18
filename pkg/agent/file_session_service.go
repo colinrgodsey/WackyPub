@@ -131,11 +131,11 @@ func (s *FileSessionService) Get(ctx context.Context, req *session.GetRequest) (
 	// 2. Read turns from session.jsonl
 	sessionTurns, _ := ReadSessionTurns(agentDir)
 
-	// Combine and merge consecutive user turns
+	// Clean and normalize session turns (strip dangling function responses, prune empty turns, merge consecutive user turns)
 	var rawContents []*genai.Content
 	rawContents = append(rawContents, memContentTurn)
 	rawContents = append(rawContents, sessionTurns...)
-	mergedContents := MergeConsecutiveUserTurns(rawContents)
+	mergedContents := CleanSessionTurns(rawContents)
 
 	var evts []*session.Event
 	for i, c := range mergedContents {

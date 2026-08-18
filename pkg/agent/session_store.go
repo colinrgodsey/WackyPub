@@ -163,36 +163,155 @@ func contentTextAll(c *genai.Content) string {
 	return text
 }
 
-// MergeConsecutiveUserTurns collapses runs of consecutive "user"-role Contents
-// into a single Content per run, concatenating their Parts in order.
+// CleanSessionTurns sanitizes a sequence of conversation turns for model requests by:
+// 1. Removing dangling FunctionResponse parts (responses without a matching FunctionCall in the preceding model turn).
+// 2. Pruning empty turns (turns with zero parts remaining after filtering).
+// 3. Merging consecutive "user"-role turns into a single user turn per run, concatenating their parts in order.
 //
 // session.jsonl intentionally allows consecutive user turns to accumulate —
 // multiple `add` calls without an intervening `generate`, and, on every
 // generation, the injected system-prompt+memory turn landing immediately
 // before whatever the first real turn happens to be (itself usually "user").
 // That's fine for storage, but many OpenAI-compatible chat templates reject
-// or silently mishandle non-alternating roles. This normalizes the sequence
-// right before it's sent to a model, without touching what's stored on disk;
-// callers should apply it to the Contents slice built for a model.LLMRequest,
-// not to what gets persisted via AppendSessionContent/WriteSessionTurns.
-//
-// Only "user" runs are merged. "model" turns are never produced back-to-back
-// under normal operation (each GenerateTurn call reads history, then appends
-// exactly one model turn), so there's nothing to collapse there.
-func MergeConsecutiveUserTurns(contents []*genai.Content) []*genai.Content {
-	merged := make([]*genai.Content, 0, len(contents))
-	for _, c := range contents {
-		if c == nil {
-			continue
-		}
-		if n := len(merged); n > 0 && merged[n-1].Role == "user" && c.Role == "user" {
-			combinedParts := make([]*genai.Part, 0, len(merged[n-1].Parts)+len(c.Parts))
-			combinedParts = append(combinedParts, merged[n-1].Parts...)
-			combinedParts = append(combinedParts, c.Parts...)
-			merged[n-1] = &genai.Content{Role: "user", Parts: combinedParts}
-			continue
-		}
-		merged = append(merged, c)
+// or silently mishandle non-alternating roles. Furthermore, LLM backends
+// (OpenAI, Anthropic, Gemini) reject requests with a 400 Bad Request error if
+// a FunctionResponse appears without a matching FunctionCall in the immediately
+// preceding assistant message (e.g. if compaction cut history mid-exchange).
+// This normalizes the sequence right before it's sent to a model, without touching
+// what's stored on disk; callers should apply it to the Contents slice built for
+// a model.LLMRequest, not to what gets persisted via AppendSessionContent/WriteSessionTurns.
+func CleanSessionTurns(contents []*genai.Content) []*genai.Content {
+	if len(contents) == 0 {
+		return nil
 	}
-	return merged
+
+	// 1. Merge consecutive user turns first so that related user turns
+	// (e.g. text + responses or multiple user turns between model turns)
+	// are grouped together before validating against the preceding model turn.
+	mergedUserTurns := make([]*genai.Content, 0, len(contents))
+	for _, c := range contents {
+		if c == nil || len(c.Parts) == 0 {
+			continue
+		}
+		if n := len(mergedUserTurns); n > 0 && mergedUserTurns[n-1].Role == "user" && c.Role == "user" {
+			combinedParts := make([]*genai.Part, 0, len(mergedUserTurns[n-1].Parts)+len(c.Parts))
+			combinedParts = append(combinedParts, mergedUserTurns[n-1].Parts...)
+			combinedParts = append(combinedParts, c.Parts...)
+			mergedUserTurns[n-1] = &genai.Content{Role: "user", Parts: combinedParts}
+			continue
+		}
+		partsCopy := make([]*genai.Part, len(c.Parts))
+		copy(partsCopy, c.Parts)
+		mergedUserTurns = append(mergedUserTurns, &genai.Content{
+			Role:  c.Role,
+			Parts: partsCopy,
+		})
+	}
+
+	// 2. Validate and filter parts (remove dangling FunctionResponses, strip nil parts).
+	// Also prune any turns that become empty after filtering.
+	cleaned := make([]*genai.Content, 0, len(mergedUserTurns))
+	for _, turn := range mergedUserTurns {
+		var prevModelTurn *genai.Content
+		if len(cleaned) > 0 && cleaned[len(cleaned)-1].Role == "model" {
+			prevModelTurn = cleaned[len(cleaned)-1]
+		}
+
+		var availableCalls []*genai.FunctionCall
+		if prevModelTurn != nil {
+			for _, p := range prevModelTurn.Parts {
+				if p != nil && p.FunctionCall != nil {
+					availableCalls = append(availableCalls, p.FunctionCall)
+				}
+			}
+		}
+		usedCalls := make([]bool, len(availableCalls))
+
+		validParts := make([]*genai.Part, 0, len(turn.Parts))
+		for _, p := range turn.Parts {
+			if p == nil {
+				continue
+			}
+
+			// If this part is a FunctionResponse, check if it matches an unconsumed FunctionCall in prevModelTurn
+			if p.FunctionResponse != nil {
+				if prevModelTurn == nil || len(availableCalls) == 0 {
+					// No preceding model turn or preceding model turn had no function calls -> dangling!
+					continue
+				}
+
+				resp := p.FunctionResponse
+				matchedIdx := -1
+
+				// 1st pass: try exact ID match if response ID is non-empty
+				if resp.ID != "" {
+					for idx, call := range availableCalls {
+						if !usedCalls[idx] && call.ID != "" && call.ID == resp.ID {
+							if resp.Name == "" || call.Name == "" || call.Name == resp.Name {
+								matchedIdx = idx
+								break
+							}
+						}
+					}
+				}
+
+				// 2nd pass: match by Name if not matched by ID
+				if matchedIdx == -1 {
+					for idx, call := range availableCalls {
+						if !usedCalls[idx] && call.Name == resp.Name {
+							matchedIdx = idx
+							break
+						}
+					}
+				}
+
+				if matchedIdx == -1 {
+					// No matching call found -> dangling response, discard it!
+					continue
+				}
+
+				usedCalls[matchedIdx] = true
+				matchedCall := availableCalls[matchedIdx]
+
+				// Ensure response has the call's ID (or call has response's ID) so wire tool_call_id matches
+				if resp.ID == "" && matchedCall.ID != "" {
+					resp.ID = matchedCall.ID
+				} else if resp.ID != "" && matchedCall.ID == "" {
+					matchedCall.ID = resp.ID
+				}
+
+				validParts = append(validParts, p)
+				continue
+			}
+
+			// Non-FunctionResponse parts (text, images, FunctionCalls in model turns) are kept
+			validParts = append(validParts, p)
+		}
+
+		// If all parts in this turn were stripped, drop the turn entirely
+		if len(validParts) == 0 {
+			continue
+		}
+
+		// If dropping an earlier turn caused two user turns to become adjacent, merge them
+		if n := len(cleaned); n > 0 && cleaned[n-1].Role == "user" && turn.Role == "user" {
+			combined := make([]*genai.Part, 0, len(cleaned[n-1].Parts)+len(validParts))
+			combined = append(combined, cleaned[n-1].Parts...)
+			combined = append(combined, validParts...)
+			cleaned[n-1] = &genai.Content{Role: "user", Parts: combined}
+			continue
+		}
+
+		cleaned = append(cleaned, &genai.Content{
+			Role:  turn.Role,
+			Parts: validParts,
+		})
+	}
+
+	return cleaned
+}
+
+// MergeConsecutiveUserTurns is a backwards-compatible alias for CleanSessionTurns.
+func MergeConsecutiveUserTurns(contents []*genai.Content) []*genai.Content {
+	return CleanSessionTurns(contents)
 }

@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"iter"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -556,5 +559,171 @@ func TestCommandTimeout_Precedence(t *testing.T) {
 	}
 	if fa4.CommandTimeoutSeconds != -1 {
 		t.Errorf("expected disabled timeout -1, got %d", fa4.CommandTimeoutSeconds)
+	}
+}
+
+func TestRunCommandArgsSchemaD56(t *testing.T) {
+	agentDir := t.TempDir()
+	toolMap, _, err := BuildFolderAgentTools(agentDir)
+	if err != nil {
+		t.Fatalf("BuildFolderAgentTools failed: %v", err)
+	}
+
+	runCmd, ok := toolMap["run_command"]
+	if !ok {
+		t.Fatalf("missing run_command in toolMap")
+	}
+
+	decler, ok := runCmd.(interface {
+		Declaration() *genai.FunctionDeclaration
+	})
+	if !ok {
+		t.Fatalf("run_command does not implement Declaration()")
+	}
+
+	decl := decler.Declaration()
+	declBytes, err := json.Marshal(decl)
+	if err != nil {
+		t.Fatalf("failed to marshal decl: %v", err)
+	}
+
+	var declMap map[string]any
+	if err := json.Unmarshal(declBytes, &declMap); err != nil {
+		t.Fatalf("failed to unmarshal decl JSON: %v", err)
+	}
+
+	// Schema can be in parameters or parametersJsonSchema
+	var paramsMap map[string]any
+	if p, ok := declMap["parameters"].(map[string]any); ok {
+		paramsMap = p
+	} else if p, ok := declMap["parametersJsonSchema"].(map[string]any); ok {
+		paramsMap = p
+	} else {
+		t.Fatalf("neither parameters nor parametersJsonSchema found in decl: %s", string(declBytes))
+	}
+
+	props, ok := paramsMap["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing 'properties' in schema: %v", paramsMap)
+	}
+
+	argsProp, ok := props["args"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing 'args' property in schema: %v", props)
+	}
+
+	// D56: args must be plain "array", not a union like ["null", "array"]
+	argsType := argsProp["type"]
+	if argsType != "array" {
+		t.Errorf("expected 'args' type to be 'array', got %v (%T)", argsType, argsType)
+	}
+
+	// Required properties must include "command" and "args"
+	reqList, _ := paramsMap["required"].([]any)
+	reqSet := make(map[string]bool)
+	for _, r := range reqList {
+		if s, ok := r.(string); ok {
+			reqSet[s] = true
+		}
+	}
+	if !reqSet["command"] {
+		t.Errorf("expected 'command' in required, got %v", reqList)
+	}
+	if !reqSet["args"] {
+		t.Errorf("expected 'args' in required, got %v", reqList)
+	}
+}
+
+func TestDeterministicToolOrderingD57(t *testing.T) {
+	wsDir := t.TempDir()
+	agentDir := filepath.Join(wsDir, "bob")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "AGENTS.md"), []byte("Prompt"), 0644); err != nil {
+		t.Fatalf("failed to write AGENTS.md: %v", err)
+	}
+
+	expectedOrder := []string{
+		"create_scratchpad",
+		"delete_scratchpad",
+		"get_scratchpad",
+		"list_scratchpads",
+		"load_skill",
+		"run_command",
+		"search_scratchpad",
+	}
+
+	for iter := 0; iter < 10; iter++ {
+		var receivedToolNames []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			bodyBytes, _ := io.ReadAll(r.Body)
+			var bodyMap map[string]any
+			_ = json.Unmarshal(bodyBytes, &bodyMap)
+			if rawTools, ok := bodyMap["tools"].([]any); ok {
+				for _, tAny := range rawTools {
+					if tMap, ok := tAny.(map[string]any); ok {
+						if fnMap, ok := tMap["function"].(map[string]any); ok {
+							if name, ok := fnMap["name"].(string); ok {
+								receivedToolNames = append(receivedToolNames, name)
+							}
+						}
+					}
+				}
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      "chatcmpl-test",
+				"object":  "chat.completion",
+				"created": time.Now().Unix(),
+				"model":   "dummy-model",
+				"choices": []any{
+					map[string]any{
+						"index": 0,
+						"message": map[string]any{
+							"role":    "assistant",
+							"content": "ok",
+						},
+						"finish_reason": "stop",
+					},
+				},
+			})
+		}))
+
+		cfgJSON := fmt.Sprintf(`{"model":"dummy-model","endpoint":%q}`, srv.URL)
+		if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), []byte(cfgJSON), 0644); err != nil {
+			srv.Close()
+			t.Fatalf("failed to write runtime.json: %v", err)
+		}
+
+		sessionJSONL := filepath.Join(agentDir, "session.jsonl")
+		userTurn := `{"role":"user","parts":[{"text":"hello"}]}` + "\n"
+		if err := os.WriteFile(sessionJSONL, []byte(userTurn), 0644); err != nil {
+			srv.Close()
+			t.Fatalf("failed to write session.jsonl: %v", err)
+		}
+
+		fa, err := LoadFolderAgent(wsDir, "bob", 1)
+		if err != nil {
+			srv.Close()
+			t.Fatalf("LoadFolderAgent iter %d failed: %v", iter, err)
+		}
+
+		_, err = fa.GenerateTurn(context.Background())
+		srv.Close()
+		if err != nil {
+			t.Fatalf("iter %d: GenerateTurn failed: %v", iter, err)
+		}
+
+		if len(receivedToolNames) != len(expectedOrder) {
+			t.Fatalf("iter %d: expected %d tools on wire, got %d: %v", iter, len(expectedOrder), len(receivedToolNames), receivedToolNames)
+		}
+
+		for i := range expectedOrder {
+			if receivedToolNames[i] != expectedOrder[i] {
+				t.Fatalf("iter %d: tool order mismatch at index %d: got %q, expected %q (full received: %v)", iter, i, receivedToolNames[i], expectedOrder[i], receivedToolNames)
+			}
+		}
 	}
 }

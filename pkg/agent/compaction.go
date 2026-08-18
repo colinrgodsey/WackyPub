@@ -229,7 +229,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	// function returns.
 	memTurnText := FormatPersistentMemoryTurn(existingMemory)
 	memTurn := genai.NewContentFromText(memTurnText, "user")
-	seedContents := MergeConsecutiveUserTurns(append([]*genai.Content{memTurn}, compactTurns...))
+	seedContents := CleanSessionTurns(append([]*genai.Content{memTurn}, compactTurns...))
 
 	sessionSvc := session.InMemoryService()
 	createResp, err := sessionSvc.Create(ctx, &session.CreateRequest{
@@ -299,7 +299,7 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 	// a separate synthetic user turn, not spliced into the surviving boundary
 	// turn's own text, so what the user/agent actually said stays intact.
 	// Lands as its own turn in session.jsonl and gets folded into the
-	// following real user turn by MergeConsecutiveUserTurns the next time
+	// following real user turn by CleanSessionTurns the next time
 	// anything reads the session (FileSessionService.Get, same as the memory
 	// turn) - no special-casing needed. Skipped on an empty remaining session
 	// (nothing to attach it in front of) or an explicit opt-out.

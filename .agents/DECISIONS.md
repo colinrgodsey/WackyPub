@@ -1074,3 +1074,97 @@ Implemented in `pkg/agent/agent_folder.go`. Verified live with a real model: reb
 **Removed both halves, not narrowed.** No explicit `Stdin` now means `cmd.Stdin` stays unset entirely - the spawned tool gets `/dev/null` (`exec.Cmd`'s own default), the same as any tool with no `Args`/`Env` already got before this fallback existed. `WACKYPUB_TOOL_ARGS` is gone from the environment too. A tool that wants to know its own invocation still has `args`/`env` the normal way; nothing lost that wasn't already redundant.
 
 **Why**: closes a real, live-discovered surprise - a companion tool that itself relays its own stdin (like `wackyproc`) had no way to distinguish "the agent intentionally wants this piped through" from "wackypub always sends something regardless" - for a feature that never had a documented reason to exist and was already fully redundant with normal argv.
+
+## D54: `MergeConsecutiveUserTurns` refactored into generic `CleanSessionTurns` with dangling function response removal
+
+Implemented in `pkg/agent/session_store.go`.
+
+**Why**: Backends across the board (Anthropic, OpenAI, OpenRouter, Google Gemini) enforce strict role and tool invocation invariants on multi-turn history. If a `FunctionResponse` (or `tool_result` block) appears without a matching `FunctionCall` (`tool_use` / `tool_call_id`) in the immediately preceding assistant message, providers reject the request with a hard 400 Bad Request error. Such dangling responses naturally accumulate in real-world use:
+1. **Compaction boundary truncation**: Compacting the oldest turns can slice a session between a `model` turn's `FunctionCall` and the subsequent `user` turn's `FunctionResponse`, leaving an orphaned response at the start of surviving history.
+2. **Crashed / interrupted runs**: Partial tool turns or manual session file edits can orphan tool responses.
+
+**Pipeline Structure**: `CleanSessionTurns(contents []*genai.Content) []*genai.Content` replaces and extends `MergeConsecutiveUserTurns`:
+1. **Dangling `FunctionResponse` Stripping**: Iterates through each turn. Any `FunctionResponse` part is checked against the immediately preceding kept turn. If the previous turn is not a `model` turn or does not have a matching, unconsumed `FunctionCall` (matched by `ID` if set, otherwise by `Name`), the `FunctionResponse` is stripped. Mixed turns (e.g. text + dangling tool response) have only the dangling response removed.
+2. **Empty Turn Pruning**: If stripping dangling responses leaves a turn with 0 parts, the entire turn is dropped.
+3. **Consecutive User Turn Merging**: Collapses runs of consecutive `user` turns into single `user` turns, preserving part order (text, blobs/images, and valid tool responses). Pruning an empty turn between two user turns allows them to merge cleanly.
+4. **Backwards Compatibility**: `MergeConsecutiveUserTurns` is retained as a thin wrapper delegating to `CleanSessionTurns`.
+
+## D55: `wackydiscord` — Workspace-driven Discord REPL & multi-agent channel bridge
+
+Implemented in `tools/wackydiscord`.
+
+**Architecture**: A standalone Go module in `tools/wackydiscord` (`github.com/colinrgodsey/wackydiscord`) that wraps `AgentSDK` in-process (`pkg/agent/sdk.go`) and connects a Discord bot to a WackyPub workspace directory.
+
+**Core Mechanics**:
+1. **Channel-to-Agent Bindings (`/bind`, `/unbind`, `/status`, `/agents`)**:
+   - Pure Discord Application Slash Commands registered at bot startup.
+   - Binds a Discord channel (or DM) to a specific `agent_id` in the workspace.
+   - Binding state persisted to `<ws_dir>/.wackydiscord.json` so associations survive bot restarts.
+2. **Auto-Fill & Compaction-Resilient Syncing**:
+   - Automatically backfills any unseen turns before running an interactive user turn (or on explicit `/fill`).
+   - Tracks `last_synced_turn_hash` (SHA-256 of canonical turn content) alongside `last_synced_turn_index` in state. If compaction truncates history, the hash scan anchors the sync boundary without duplicate message spam.
+   - User turns from background activity are formatted distinctly with blockquotes (`> 👤 **[User Turn]** ...`).
+3. **Live File Watcher (`fsnotify`)**:
+   - Watches bound agent directories in real-time for `session.jsonl` modifications, creations, and atomic renames.
+   - Debounces events (~300ms) and pushes newly appended background turns directly into bound Discord channels without waiting for a user message.
+4. **Webhook Persona Posting**:
+   - Messages are posted via channel webhooks with the bound agent's username and custom avatar if present, falling back gracefully to standard channel message delivery if webhook management permissions are absent.
+5. **Interactive Turn Driving**:
+   - Heartbeat typing indicator (`s.ChannelTyping`) kept alive in a background goroutine while `AgentSDK.AddAndGenerateTurn` executes under the session lock.
+   - Long responses automatically split along newline boundaries to stay within Discord's 2000-character message limit.
+   - `/verbose` mode displays real-time tool execution badges and status.
+
+**Why**: Provides a high-fidelity, multi-agent interactive interface for human users and external platforms to monitor, drive, and converse with folder-based agents in real-time across Discord channels, with seamless persona presentation, instant live updates from background executions, and reliable state sync across compaction events.
+
+## D56: `run_command`'s `args` gets an explicit, hand-written schema override - not global env var, not just `omitempty` removal
+
+Implemented in `pkg/agent/agent_folder.go`.
+
+**The problem, confirmed at the wire level, not inferred.** Testing `wackyproc` against MiniMax-M2.7 (`testws/clerk`) surfaced a real tool-calling failure: `run_command` calls with `args` consistently came back as `"args": null` in the raw API response, even though the model's own `reasoning_content` in the same response showed clear intent to pass specific args. Captured via a local proxy between wackypub and MiniMax's real endpoint (not trusting wackypub's own logs) - the model's own generated JSON, not something wackypub mis-parsed.
+
+**Isolated to exactly one thing, by testing four schema variants directly against MiniMax's API, bypassing wackypub entirely:** required-vs-optional makes no difference; the only thing that breaks it is `args`'s type being the union `["null", "array"]` rather than a plain `"array"`. A required, non-nullable array works. An *optional*, non-nullable array (no `null` in the type, and not in `required` either) also works. Only the null-union fails. This isn't likely to be MiniMax-specific either - nullable/union types are a known rough edge for providers doing schema- or grammar-constrained tool-call decoding generally, so treating this as a real compatibility fix rather than a narrow one-off patch.
+
+**Root cause**: `run_command`'s `args []string` field gets `type: ["null", "array"]` from ADK's own schema auto-inference (`github.com/google/jsonschema-go`, pulled in transitively via `google.golang.org/adk/v2`, not a wackypub dependency directly) - confirmed by reading `infer.go` directly: any Go field of `reflect.Slice` kind gets the null-union unconditionally, regardless of `omitempty`/required status (those are two separate, independently-computed things in this library - "required" only controls whether the key must be present, not whether its value can be `null`). Dropping `omitempty` alone would *not* fix this, confirmed by tracing the exact function boundaries: the null-decision happens inside `forType(reflect.Type, ...)`, which never receives the enclosing struct field's tags at all.
+
+**Two fixes considered for suppressing the null-union; only one chosen.** The library has a `JSONSCHEMAGODEBUG=typeschemasnull=1` env var that does suppress it - verified working with a live, wire-captured test (a clean session, no prior-turn contamination, first attempt correct). Rejected anyway as the actual fix, for reasons found by checking scope before committing to it, not assumed: it's process-wide (any tool's slice-typed field, not just this one), the underlying library is used more broadly inside ADK than just tool schemas (`session.go`, `internal/typeutil/convert.go` - both in wackypub's live execution path; the `workflow` package too, though wackypub doesn't use that today), it's an undocumented debug flag on a transitive dependency wackypub doesn't version-pin directly (a routine ADK upgrade could silently change or drop it), and it leaks into every spawned tool subprocess's environment (`executeTool`'s `cmd.Env = os.Environ()`).
+
+**Chosen instead: an explicit `InputSchema` override on `run_command`'s `functiontool.Config`, bypassing auto-inference entirely for just this one tool.** Confirmed via ADK's own source (`resolvedSchema[T]` in `tool/functiontool/function.go`): if `Config.InputSchema` is non-nil, `jsonschema.For[T](nil)` (the reflection-based inference that produces the null-union) never runs at all - the hand-written schema is used as-is. Zero global behavior change, no dependency on an undocumented flag, and if the `jsonschema.Schema` type itself ever changes shape in a future ADK version, that's a compile error, not a silent runtime regression.
+
+**Real tradeoff, not free**: ADK's own code has a `// TODO: check if override schema is compatible with T` comment - it does not validate that a hand-written override actually matches `RunCommandArgs`'s real fields. Keeping the two in sync is now a manual responsibility. Mitigated by a regression test asserting the actual generated `run_command` schema has `args` typed as a plain `array` (not a null union) - not just that the tool still works, so a future edit to `RunCommandArgs` that silently drifts from the hand-written schema gets caught, and so a hypothetical future upstream fix to the auto-inference behavior doesn't quietly go unnoticed either.
+
+**Also, independent of the null-union question**: `args` becomes a required, always-present field (`omitempty` dropped from the JSON tag, `[]string{}` used instead of `nil` for "no args") rather than an optional/omittable one. Not a substitute for the schema override - confirmed this alone doesn't fix the null-union - but a genuinely cleaner contract on its own: there's no meaningful difference between "no args given" and "an empty args list" for a command, so collapsing that distinction removes one more axis of ambiguity for *any* model to reason about, not just this one.
+
+**Why**: fixes a real, wire-confirmed tool-calling failure for at least one real provider (MiniMax-M2.7) and probably others with similar constrained-decoding behavior, with a fix scoped precisely to the one field that needs it rather than a process-wide toggle whose full blast radius wasn't fully auditable, and backed by a regression test specific enough to catch either side silently drifting apart later.
+
+## D57: Deterministic tool slice ordering for prompt cache stability
+
+Implemented in `pkg/agent/agent_folder.go`.
+
+**Root cause**: In `LoadFolderAgent`, ADK tools were extracted from `adkToolsMap` (a `map[string]tool.Tool`) via `for _, t := range adkToolsMap { toolsList = append(toolsList, t) }`. Because Go map iteration order is randomized by the Go runtime on every execution, `toolsList` was shuffled into a pseudo-random order on every turn generation. This caused Google ADK and downstream LLM wire adapters (OpenAI, Anthropic, OpenRouter, Gemini) to emit the `tools: [...]` schema array in an arbitrary order from turn to turn, completely invalidating the prompt cache prefix on every single request.
+
+**Fix**:
+1. Sort `toolsList` deterministically by tool name (`sort.Slice(toolsList, func(i, j int) bool { return toolsList[i].Name() < toolsList[j].Name() })`) before passing to `BuildADKAgentWithConfig`.
+2. Ensure `BuildFolderAgentTools` and all prompt/tool assembly paths remain 100% deterministic.
+3. Regression test asserting that repeated calls to `LoadFolderAgent` produce identical, stably-sorted tool lists and request tool declarations.
+
+**Why**: Fixes a critical prompt-caching regression where multi-turn agent sessions suffered ~0% prompt cache hit rates due to shuffled tool schemas, restoring full prefix prompt caching across all supported LLM backends (OpenAI, Anthropic, DeepSeek, Minimax, OpenRouter, Gemini).
+
+## D58: `wackyproc` adopts D14 recursive tool discovery & symlink resolution
+
+Implemented in `tools/wackyproc/proc/manager.go`.
+
+**Context**: In WackyPub, D14 established that tools in `<agentDir>/tools/` are discovered recursively (`DiscoverAgentToolsMap`), resolving and following directory symlinks (such as shared toolpacks or nested tool directories) with cycle detection, while strictly denying `$PATH` fallback.
+
+**The problem**: `wackyproc` initially resolved tools using a flat `filepath.Join(cwd, "tools", toolName)` lookup. While direct file symlinks worked, directory symlinks (e.g. `./tools/toolpack -> /opt/toolpack/`) and nested tool directories (e.g. `./tools/nested/sub/subtool`) were not discoverable by their base command name, forcing callers to provide explicit relative subpaths or failing altogether.
+
+**Fix**:
+1. Added `ResolveToolPath(cwd, toolName)` to `wackyproc/proc`:
+   - Checks direct relative paths under `./tools/` first (with boundary checks preventing `../` path traversal escapes outside `./tools/`).
+   - Performs a recursive walk under `<cwd>/tools/` following directory symlinks (`filepath.EvalSymlinks`) with cycle detection, identical to WackyPub's D14 mechanics.
+   - Preserves strict isolation: only executable files under `./tools/` are resolved; commands outside `./tools/` fail with "no PATH fallback".
+2. Added unit tests in `tools/wackyproc/proc/proc_test.go` covering nested directories, directory symlinks, file symlinks, and path traversal attempts.
+
+**Why**: Ensures `wackyproc` and `wackypub` share identical tool resolution semantics, so an agent can spawn any tool via `wackyproc run <tool>` that it can run synchronously via `run_command command="<tool>"`.
+
+
+

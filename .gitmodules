@@ -4,3 +4,6 @@
 [submodule "tools/wackyproc"]
 	path = tools/wackyproc
 	url = git@github.com:colinrgodsey/wackyproc.git
+[submodule "tools/wackydiscord"]
+	path = tools/wackydiscord
+	url = git@github.com:colinrgodsey/wackydiscord.git

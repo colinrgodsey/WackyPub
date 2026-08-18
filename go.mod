@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/achetronic/adk-utils-go v0.23.1-0.20260810132742-1f0a646bcdfd
 	github.com/go-git/go-git/v5 v5.19.2
+	github.com/google/jsonschema-go v0.4.2
 	github.com/h2non/filetype v1.1.3
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/image v0.45.0
@@ -35,7 +36,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/google/safehtml v0.1.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect

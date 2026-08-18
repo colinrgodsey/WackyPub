@@ -8,11 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
 	"google.golang.org/adk/v2/runner"
@@ -80,7 +82,7 @@ type ExecToolArgs struct {
 
 type RunCommandArgs struct {
 	Command string            `json:"command" jsonschema_description:"Name of the command executable to run from the discovered tools list"`
-	Args    []string          `json:"args,omitempty" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
+	Args    []string          `json:"args" jsonschema_description:"List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 	Env     map[string]string `json:"env,omitempty" jsonschema_description:"Key-value object map of environment variables to set for the tool invocation (not macro-expanded)"`
 	Stdin   string            `json:"stdin,omitempty" jsonschema_description:"Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)"`
 }
@@ -249,9 +251,41 @@ func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[s
 		cmdListStr,
 	)
 
+	// Explicit schema override per D56: prevents auto-inference from emitting args as ["null", "array"]
+	runCmdInputSchema := &jsonschema.Schema{
+		Type: "object",
+		Properties: map[string]*jsonschema.Schema{
+			"command": {
+				Type:        "string",
+				Description: "Name of the command executable to run from the discovered tools list",
+			},
+			"args": {
+				Type:        "array",
+				Description: "List of CLI command line arguments passed positionally to the tool (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)",
+				Items: &jsonschema.Schema{
+					Type: "string",
+				},
+			},
+			"env": {
+				Type:        "object",
+				Description: "Key-value object map of environment variables to set for the tool invocation (not macro-expanded)",
+				AdditionalProperties: &jsonschema.Schema{
+					Type: "string",
+				},
+			},
+			"stdin": {
+				Type:        "string",
+				Description: "Optional stdin template string to pipe into the command (supports inline <SCRATCHPAD_DATA id=\"X\" /> macros)",
+			},
+		},
+		Required:      []string{"command", "args"},
+		PropertyOrder: []string{"command", "args", "env", "stdin"},
+	}
+
 	runCmdTool, err := functiontool.New(functiontool.Config{
 		Name:        "run_command",
 		Description: runCmdDesc,
+		InputSchema: runCmdInputSchema,
 	}, func(ctx agent.Context, args RunCommandArgs) (RunCommandResult, error) {
 		toolPath, ok := discoveredMap[args.Command]
 		if !ok {
@@ -623,6 +657,9 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTime
 	for _, t := range adkToolsMap {
 		toolsList = append(toolsList, t)
 	}
+	sort.Slice(toolsList, func(i, j int) bool {
+		return toolsList[i].Name() < toolsList[j].Name()
+	})
 
 	if maxToolTurns <= 0 {
 		maxToolTurns = DefaultMaxToolTurns

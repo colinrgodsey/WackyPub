@@ -76,11 +76,12 @@ same implementation and documentation without duplicating either.
 go build -o bin/wackypub .
 (cd tools/files-rw && go build -o ../../bin/files-rw .)
 (cd tools/wackyproc && go build -o ../../bin/wackyproc .)
+(cd tools/wackydiscord && go build -o ../../bin/wackydiscord .)
 go test ./...
 go vet ./...
 ```
 
-`tools/files-rw` ([colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)) and `tools/wackyproc` ([colinrgodsey/wackyproc](https://github.com/colinrgodsey/wackyproc)) are git submodules - run `git submodule update --init` after cloning if they are empty.
+`tools/files-rw` ([colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)), `tools/wackyproc` ([colinrgodsey/wackyproc](https://github.com/colinrgodsey/wackyproc)), and `tools/wackydiscord` are git submodules - run `git submodule update --init` after cloning if they are empty.
 
 ### Module Management
 
@@ -118,7 +119,7 @@ WackyPub/
 ├── pkg/
 │   ├── agent/                # Folder-agent core: the bulk of this repo's logic
 │   │   ├── runtime.go         # RuntimeConfig (runtime.json schema) + loader
-│   │   ├── session_store.go   # session.jsonl read/write, ContentText, EstimateTokens, MergeConsecutiveUserTurns
+│   │   ├── session_store.go   # session.jsonl read/write, ContentText, EstimateTokens, CleanSessionTurns
 │   │   ├── agent_folder.go    # FolderAgent: loads an agent dir, GenerateTurn (the main generation path)
 │   │   ├── openai_model.go    # NewOpenAIModel adapter wrapper, StripSignatures
 │   │   ├── adk_agent.go       # BuildADKAgent (llmagent.New) + CreateGeminiModel - alternate ADK Runner path
@@ -310,7 +311,7 @@ operation, not a side effect of inspection.
   reasoning-handling wiring (`reasoningEgress` modes, `ReasoningField`,
   `SupportsReasoningDetails`, `ExtraBody`) using `httptest`-mocked
   wire-payload assertions, plus `StripSignatures`/
-  `StripSessionSignatures`. `MergeConsecutiveUserTurns` is covered in
+  `StripSessionSignatures`. `CleanSessionTurns` is covered in
   `pkg/agent/session_store_test.go`. Extend these before reaching for a
   scratch program - see LOCAL_TESTING.md.
 - What automated tests *can't* cover: whether a real provider actually
