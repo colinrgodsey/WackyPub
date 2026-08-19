@@ -267,3 +267,27 @@ Maintain an ongoing, append-only audit trail across a 20-turn complex task:
 - At turn $N$, the agent appends its current status to the ledger out-of-band:
   `create_scratchpad(text="<SCRATCHPAD_DATA id=\"ledger_vN-1\" />\n[Turn N] Result: OK")` -> `ledger_vN`.
 - Preserves complete execution history without bloating `session.jsonl` or forcing premature session compaction.
+
+---
+
+## 8. Downstream Display Expansion Sentinel (`<SCRATCHPAD_EXPAND id="X" />`)
+
+*(Optional pattern supported by downstream presentation layers such as `wackydiscord` - not expanded by `wackypub` core).*
+
+### The Problem
+In long-form generative agents (such as narrator or storytelling personas), an agent might generate large prose text, store it in a persistent scratchpad via `create_scratchpad(text=...)`, and then need human-facing chat frontends (like Discord) to display that prose.
+Re-emitting the full prose a second time in the final assistant response text wastes generation tokens and clutters `session.jsonl`.
+
+### The Solution: Output Display Sentinel
+An agent generates its large output directly into a scratchpad via `create_scratchpad`, and outputs the sentinel `<SCRATCHPAD_EXPAND id="X" />` in its final message text:
+
+1. **Agent Tool Call:**
+   `create_scratchpad(text="The rain poured heavily over the neon-lit rooftops of Neo-Kyoto...")` -> returns ID `"n1a7"`
+2. **Agent Final Response:**
+   `<SCRATCHPAD_EXPAND id="n1a7" />`
+
+### Downstream Behavior
+- **`wackypub` Core (CLI / SDK / session.jsonl):** Leaves `<SCRATCHPAD_EXPAND id="n1a7" />` untouched as literal plain text. No core rewriting occurs.
+- **Downstream Consumers (e.g. `wackydiscord`):** Before delivering the assistant message to human users, `wackydiscord` resolves the sentinel against the agent's scratchpad (`get_scratchpad("n1a7")`) and substitutes the full prose inline.
+- **Fallback:** If the scratchpad entry cannot be found or was evicted, downstream consumers gracefully display the raw `<SCRATCHPAD_EXPAND id="X" />` tag.
+
