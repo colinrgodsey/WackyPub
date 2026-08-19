@@ -96,18 +96,13 @@ func TestValidateAgentTarget_CallChain(t *testing.T) {
 		t.Fatalf("unexpected error message: %v", err)
 	}
 
-	// Target 'alice' should succeed and update CallChainEnvVar
-	cleanup, err := ValidateAgentTarget("alice")
+	// Target 'alice' should succeed and return updated A2AMetadata with 'alice' appended
+	newMeta, err := ValidateAgentTarget("alice")
 	if err != nil {
 		t.Fatalf("expected success targeting alice, got: %v", err)
 	}
-	if os.Getenv(CallChainEnvVar) != "bob,jax,alice" {
-		t.Fatalf("expected chain 'bob,jax,alice', got %q", os.Getenv(CallChainEnvVar))
-	}
-
-	cleanup()
-	if os.Getenv(CallChainEnvVar) != "bob,jax" {
-		t.Fatalf("expected chain restored to 'bob,jax', got %q", os.Getenv(CallChainEnvVar))
+	if strings.Join(newMeta.CallChain, ",") != "bob,jax,alice" {
+		t.Fatalf("expected chain 'bob,jax,alice', got %v", newMeta.CallChain)
 	}
 }
 
@@ -137,11 +132,13 @@ func TestValidateAgentTarget_Allowlist(t *testing.T) {
 	os.WriteFile(filepath.Join(bobDir, AllowedAgentsFile), []byte("# allowed\nalice\n"), 0644)
 
 	// Targeting 'alice' should now succeed
-	cleanup, err := ValidateAgentTarget("alice")
+	meta, err := ValidateAgentTarget("alice")
 	if err != nil {
 		t.Fatalf("expected allowed access to alice, got: %v", err)
 	}
-	cleanup()
+	if meta == nil || len(meta.CallChain) != 1 || meta.CallChain[0] != "alice" {
+		t.Fatalf("unexpected call chain: %v", meta)
+	}
 
 	// Targeting 'charlie' should fail
 	_, err = ValidateAgentTarget("charlie")

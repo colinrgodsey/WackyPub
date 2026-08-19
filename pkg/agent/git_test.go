@@ -184,22 +184,23 @@ func TestCrossAgentGitRevisionLineage(t *testing.T) {
 		t.Fatalf("failed to chdir to bobDir: %v", err)
 	}
 	defer os.Chdir(origCwd)
-
-	cleanup, err := ValidateAgentTarget("jax")
+	meta, err := ValidateAgentTarget("jax")
 	if err != nil {
 		t.Fatalf("ValidateAgentTarget jax failed: %v", err)
 	}
-	defer cleanup()
-
-	// 3. Inspect AGENT2AGENT active environment
-	meta, err := ParseA2AMetadata()
-	if err != nil {
-		t.Fatalf("ParseA2AMetadata failed: %v", err)
-	}
 
 	if meta.Metadata["workspace_revision"] != bobHeadSHA {
-		t.Errorf("expected workspace_revision to be bob's HEAD SHA %q, got %q", bobHeadSHA, meta.Metadata["workspace_revision"])
+		t.Fatalf("expected workspace_revision to be bob's HEAD SHA %q, got %q", bobHeadSHA, meta.Metadata["workspace_revision"])
 	}
+
+	// 3. Simulate child process receiving meta in its environment
+	denseMeta, err := meta.Encode()
+	if err != nil {
+		t.Fatalf("failed to encode denseMeta: %v", err)
+	}
+	origA2A := os.Getenv(Agent2AgentEnvVar)
+	defer os.Setenv(Agent2AgentEnvVar, origA2A)
+	os.Setenv(Agent2AgentEnvVar, denseMeta)
 
 	// 4. Jax appends a turn and commits
 	if err := AppendSessionTurn(jaxDir, "user", "Message for Jax"); err != nil {

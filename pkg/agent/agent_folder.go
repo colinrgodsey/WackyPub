@@ -102,6 +102,11 @@ type LoadSkillResult struct {
 // BuildFolderAgentTools constructs ADK functiontool instances for built-in tools (create_scratchpad, get_scratchpad, list_scratchpads, search_scratchpad, delete_scratchpad)
 // and a single generic run_command tool covering executables discovered under <agent_dir>/tools/.
 func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
+	return BuildFolderAgentToolsWithA2A(agentDir, nil, commandTimeoutSeconds...)
+}
+
+// BuildFolderAgentToolsWithA2A constructs ADK functiontool instances, injecting a2aMeta directly into spawned child process environments (D59).
+func BuildFolderAgentToolsWithA2A(agentDir string, a2aMeta *A2AMetadata, commandTimeoutSeconds ...int) (map[string]tool.Tool, []*genai.FunctionDeclaration, error) {
 	toolMap := make(map[string]tool.Tool)
 	var decls []*genai.FunctionDeclaration
 
@@ -227,7 +232,7 @@ func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[s
 	}
 	addTool(deleteTool)
 
-	// 6. Single generic run_command tool covering all discovered executables
+	// 6. Generic run_command tool covering all discovered executables under <agent_dir>/tools/
 	discoveredMap, discoveredNames, _, err := DiscoverAgentToolsMap(agentDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to discover agent tools: %w", err)
@@ -251,7 +256,7 @@ func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[s
 		cmdListStr,
 	)
 
-	// Explicit schema override per D56: prevents auto-inference from emitting args as ["null", "array"]
+	// Explicitly construct InputSchema to enforce required fields and plain array type for 'args' (D56)
 	runCmdInputSchema := &jsonschema.Schema{
 		Type: "object",
 		Properties: map[string]*jsonschema.Schema{
@@ -297,7 +302,7 @@ func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[s
 			Env:   args.Env,
 			Stdin: args.Stdin,
 		}
-		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, timeoutSeconds)
+		out, err := executeTool(ctx, agentDir, args.Command, toolPath, execArgs, a2aMeta, timeoutSeconds)
 		if err != nil {
 			return RunCommandResult{}, err
 		}
@@ -356,7 +361,7 @@ func BuildFolderAgentTools(agentDir string, commandTimeoutSeconds ...int) (map[s
 	return toolMap, decls, nil
 }
 
-func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, timeoutSeconds ...int) (string, error) {
+func executeTool(ctx context.Context, agentDir string, toolName string, toolPath string, args ExecToolArgs, a2aMeta *A2AMetadata, timeoutSeconds ...int) (string, error) {
 	timeout := DefaultCommandTimeoutSeconds
 	if len(timeoutSeconds) > 0 {
 		timeout = timeoutSeconds[0]
@@ -415,6 +420,17 @@ func executeTool(ctx context.Context, agentDir string, toolName string, toolPath
 			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		}
 		return nil
+	}
+
+	// D59: Propagate A2A Metadata and legacy CallChain directly to child process environment
+	if a2aMeta != nil {
+		denseJSON, err := a2aMeta.Encode()
+		if err == nil && denseJSON != "" {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", Agent2AgentEnvVar, denseJSON))
+		}
+		if len(a2aMeta.CallChain) > 0 {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", CallChainEnvVar, strings.Join(a2aMeta.CallChain, ",")))
+		}
 	}
 
 	dotEnv, err := LoadAgentDotEnv(agentDir)
@@ -582,10 +598,16 @@ type FolderAgent struct {
 	ADKAgent              agent.Agent
 	MaxToolTurns          int
 	CommandTimeoutSeconds int
+	A2AMeta               *A2AMetadata
 }
 
 // LoadFolderAgent loads and initializes an agent from <wsDir>/<agentID>.
 func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
+	return LoadFolderAgentWithA2A(wsDir, agentID, nil, maxToolTurns, commandTimeoutSeconds...)
+}
+
+// LoadFolderAgentWithA2A loads and initializes an agent with explicit A2AMetadata context (D59).
+func LoadFolderAgentWithA2A(wsDir string, agentID string, a2aMeta *A2AMetadata, maxToolTurns int, commandTimeoutSeconds ...int) (*FolderAgent, error) {
 	if agentID == "" {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
@@ -595,13 +617,10 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTime
 		return nil, fmt.Errorf("agent directory %s does not exist", agentDir)
 	}
 
-	// 0. Load .env file and populate environment variables
+	// 0. Load .env file
 	dotEnv, err := LoadAgentDotEnv(agentDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load agent .env: %w", err)
-	}
-	for k, v := range dotEnv {
-		_ = os.Setenv(k, v)
 	}
 
 	// 1. Load runtime.json
@@ -649,7 +668,7 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTime
 	}
 
 	// 5. Build ADK functiontools for agent
-	adkToolsMap, _, err := BuildFolderAgentTools(agentDir, resolvedTimeout)
+	adkToolsMap, _, err := BuildFolderAgentToolsWithA2A(agentDir, a2aMeta, resolvedTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build agent tools: %w", err)
 	}
@@ -682,6 +701,7 @@ func LoadFolderAgent(wsDir string, agentID string, maxToolTurns int, commandTime
 		ADKAgent:              ag,
 		MaxToolTurns:          maxToolTurns,
 		CommandTimeoutSeconds: resolvedTimeout,
+		A2AMeta:               a2aMeta,
 	}, nil
 }
 

@@ -139,7 +139,7 @@ func TestExecuteTool_ScratchpadMacroAndOutputRedirection(t *testing.T) {
 		Stdin: fmt.Sprintf("<SCRATCHPAD_DATA id=%q />", entry.ID),
 	}
 
-	output, err := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args)
+	output, err := executeTool(context.Background(), agentDir, "echo_tool.sh", toolPath, args, nil)
 	if err != nil {
 		t.Fatalf("executeTool failed: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestExecuteTool_LargeOutputRedirectionWithSize(t *testing.T) {
 		t.Fatalf("failed to write tool script: %v", err)
 	}
 
-	output, err := executeTool(context.Background(), agentDir, "large_tool.sh", toolPath, ExecToolArgs{})
+	output, err := executeTool(context.Background(), agentDir, "large_tool.sh", toolPath, ExecToolArgs{}, nil)
 	if err != nil {
 		t.Fatalf("executeTool failed: %v", err)
 	}

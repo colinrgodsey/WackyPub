@@ -44,11 +44,9 @@ func (s *AgentSDK) AddUserTurn(agentID string, message string) error {
 		return fmt.Errorf("message cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -81,11 +79,9 @@ func (s *AgentSDK) AddMedia(agentID string, reader io.Reader) (*genai.Content, e
 		return nil, fmt.Errorf("image reader cannot be nil")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return nil, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -138,11 +134,10 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
+	a2aMeta, err := ValidateAgentTarget(agentID)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
@@ -151,7 +146,7 @@ func (s *AgentSDK) GenerateTurn(ctx context.Context, agentID string) (string, er
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
 	}
@@ -173,11 +168,10 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 		return "", fmt.Errorf("userMessage cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
+	a2aMeta, err := ValidateAgentTarget(agentID)
 	if err != nil {
 		return "", err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -196,7 +190,7 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 	}
 
 	// 2. Load Folder Agent & Generate Assistant Turn
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return "", fmt.Errorf("failed to load agent %q: %w", agentID, err)
 	}
@@ -211,13 +205,12 @@ func (s *AgentSDK) AddAndGenerateTurn(ctx context.Context, agentID string, userM
 
 // GetAgent loads and returns the FolderAgent object for low-level ADK runner interactions.
 func (s *AgentSDK) GetAgent(agentID string) (*FolderAgent, error) {
-	cleanup, err := ValidateAgentTarget(agentID)
+	a2aMeta, err := ValidateAgentTarget(agentID)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
 
-	return LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	return LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 }
 
 // ListAgents returns the IDs of agent directories found directly under the
@@ -272,11 +265,9 @@ func (s *AgentSDK) ReadSession(agentID string) ([]*genai.Content, error) {
 		return nil, fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return nil, err
 	}
-	defer cleanup()
 
 	// No session lock: ReadSessionTurns already tolerates a torn read
 	// gracefully (skipped lines surface via SessionCorruptLines elsewhere),
@@ -292,11 +283,9 @@ func (s *AgentSDK) ReadMemory(agentID string) (string, error) {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return "", err
 	}
-	defer cleanup()
 
 	// No session lock needed: MEMORY.md isn't session.jsonl, and this read
 	// doesn't need protecting against the same writers that file's lock
@@ -315,11 +304,9 @@ func (s *AgentSDK) RenderSystemPrompt(agentID string) (string, error) {
 		return "", fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return "", err
 	}
-	defer cleanup()
 
 	// No session lock needed: RenderAgentSystemPrompt reads AGENTS.md and
 	// skills/, never session.jsonl - acquiring the lock here only added an
@@ -341,11 +328,9 @@ func (s *AgentSDK) StripSignatures(agentID string) (int, error) {
 		return 0, fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return 0, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
@@ -365,11 +350,10 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force boo
 		return false, fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
+	a2aMeta, err := ValidateAgentTarget(agentID)
 	if err != nil {
 		return false, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	lock, err := AcquireSessionLock(agentDir)
@@ -378,7 +362,7 @@ func (s *AgentSDK) CompactSession(ctx context.Context, agentID string, force boo
 	}
 	defer lock.Release()
 
-	fa, err := LoadFolderAgent(s.WorkspaceDir, agentID, s.MaxToolTurns, s.CommandTimeoutSeconds)
+	fa, err := LoadFolderAgentWithA2A(s.WorkspaceDir, agentID, a2aMeta, s.MaxToolTurns, s.CommandTimeoutSeconds)
 	if err != nil {
 		return false, err
 	}
@@ -395,11 +379,9 @@ func (s *AgentSDK) CreateScratchpad(agentID string, text string, createdBy strin
 		return nil, fmt.Errorf("scratchpad content cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return nil, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	if createdBy == "" {
@@ -418,11 +400,9 @@ func (s *AgentSDK) GetScratchpad(agentID string, entryID string, skipLines *int,
 		return "", fmt.Errorf("entryID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return "", err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	return GetScratchpad(agentDir, entryID, skipLines, numLines)
@@ -435,11 +415,9 @@ func (s *AgentSDK) ListScratchpads(agentID string) ([]ScratchpadItem, int, int, 
 		return nil, 0, MaxScratchpadEntries, fmt.Errorf("agentID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return nil, 0, MaxScratchpadEntries, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	return ListScratchpads(agentDir)
@@ -458,11 +436,9 @@ func (s *AgentSDK) SearchScratchpad(agentID string, entryID string, query string
 		return nil, fmt.Errorf("query cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if err := AuthorizeAgentTarget(agentID); err != nil {
 		return nil, err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	return SearchScratchpad(agentDir, entryID, query, caseSensitive, useRegex, maxResults)
@@ -477,11 +453,9 @@ func (s *AgentSDK) DeleteScratchpad(agentID string, entryID string) error {
 		return fmt.Errorf("entryID cannot be empty")
 	}
 
-	cleanup, err := ValidateAgentTarget(agentID)
-	if err != nil {
+	if _, err := ValidateAgentTarget(agentID); err != nil {
 		return err
 	}
-	defer cleanup()
 
 	agentDir := s.AgentDir(agentID)
 	return DeleteScratchpad(agentDir, entryID)

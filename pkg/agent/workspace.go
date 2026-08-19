@@ -161,19 +161,19 @@ func ResolveWorkspaceDir(wsFlag string, isExplicit bool) (string, error) {
 	}
 }
 
-// ValidateAgentTarget performs cross-agent authorization (AllowedAgentsFile against CWD)
-// and deadlock prevention (CallChainEnvVar) according to D16.
-// Returns a cleanup function that restores CallChainEnvVar to its previous state.
-func ValidateAgentTarget(targetAgentID string) (func(), error) {
-	noopCleanup := func() {}
+// AuthorizeAgentTarget checks cross-agent authorization (AllowedAgentsFile against CWD)
+// according to D16, D60. It verifies whether the current working directory's agent
+// allowlist permits accessing targetAgentID. Read-only content methods use this check
+// without enforcing deadlock cycle checks (reads cannot deadlock).
+func AuthorizeAgentTarget(targetAgentID string) error {
 	if targetAgentID == "" {
-		return noopCleanup, nil
+		return nil
 	}
 
-	// 1. Authorization check: AllowedAgentsFile against CWD (before resolving workspace root)
+	// Authorization check: AllowedAgentsFile against CWD (before resolving workspace root)
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get current working directory: %w", err)
+		return fmt.Errorf("failed to get current working directory: %w", err)
 	}
 
 	dir := cwd
@@ -186,7 +186,7 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		if pathExists(allowedPath) {
 			allowed, err := readAllowedAgents(allowedPath)
 			if err != nil {
-				return nil, fmt.Errorf("failed to read %s: %w", allowedPath, err)
+				return fmt.Errorf("failed to read %s: %w", allowedPath, err)
 			}
 			authorized := false
 			for _, id := range allowed {
@@ -196,13 +196,13 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 				}
 			}
 			if !authorized {
-				return nil, fmt.Errorf("agent %q is not in %s allowlist for current agent directory %q", targetAgentID, AllowedAgentsFile, dir)
+				return fmt.Errorf("agent %q is not in %s allowlist for current agent directory %q", targetAgentID, AllowedAgentsFile, dir)
 			}
 			break
 		}
 
 		if looksLikeAgentDir(dir) {
-			return nil, fmt.Errorf("access to agent %q denied: current agent directory %q has no %s allowlist", targetAgentID, dir, AllowedAgentsFile)
+			return fmt.Errorf("access to agent %q denied: current agent directory %q has no %s allowlist", targetAgentID, dir, AllowedAgentsFile)
 		}
 
 		parent := filepath.Dir(dir)
@@ -212,10 +212,23 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		dir = parent
 	}
 
-	// 2. Deadlock cycle check & A2A Metadata parsing (D16, D33)
-	origA2AEnv := os.Getenv(Agent2AgentEnvVar)
-	origChainEnv := os.Getenv(CallChainEnvVar)
+	return nil
+}
 
+// ValidateAgentTarget performs cross-agent authorization (AllowedAgentsFile against CWD)
+// and deadlock prevention (A2AMetadata.CallChain) according to D16, D33, D59, D60.
+// Returns the updated *A2AMetadata to propagate to spawned child tools, with zero process-global os.Setenv mutation.
+func ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error) {
+	if targetAgentID == "" {
+		return nil, nil
+	}
+
+	// 1. Authorization check
+	if err := AuthorizeAgentTarget(targetAgentID); err != nil {
+		return nil, err
+	}
+
+	// 2. Deadlock cycle check & A2A Metadata parsing (D16, D33, D59)
 	meta, err := ParseA2AMetadata()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse A2A metadata: %w", err)
@@ -227,7 +240,7 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		}
 	}
 
-	// 3. Update AGENT2AGENT & legacy WACKYPUB_CALL_CHAIN in environment
+	// 3. Compute updated A2AMetadata
 	callerID := ""
 	if len(meta.CallChain) > 0 {
 		callerID = meta.CallChain[len(meta.CallChain)-1]
@@ -244,10 +257,11 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		newMetaMap[k] = v
 	}
 
-	wsDir, _ := ResolveWorkspaceDir(dir, false)
+	cwd, _ := os.Getwd()
+	wsDir, _ := ResolveWorkspaceDir(cwd, false)
 	sendingAgentID := callerID
-	if sendingAgentID == "" && looksLikeAgentDir(dir) {
-		sendingAgentID = filepath.Base(dir)
+	if sendingAgentID == "" && looksLikeAgentDir(cwd) {
+		sendingAgentID = filepath.Base(cwd)
 	}
 
 	sendingRepoDir := ResolveGitRepoDir(wsDir, sendingAgentID)
@@ -264,20 +278,7 @@ func ValidateAgentTarget(targetAgentID string) (func(), error) {
 		Metadata:  newMetaMap,
 	}
 
-	denseJSON, err := newMeta.Encode()
-	if err != nil {
-		return nil, fmt.Errorf("failed to encode %s: %w", Agent2AgentEnvVar, err)
-	}
-
-	os.Setenv(Agent2AgentEnvVar, denseJSON)
-	os.Setenv(CallChainEnvVar, strings.Join(newChain, ","))
-
-	cleanup := func() {
-		os.Setenv(Agent2AgentEnvVar, origA2AEnv)
-		os.Setenv(CallChainEnvVar, origChainEnv)
-	}
-
-	return cleanup, nil
+	return newMeta, nil
 }
 
 func readAllowedAgents(path string) ([]string, error) {

@@ -1166,5 +1166,53 @@ Implemented in `tools/wackyproc/proc/manager.go`.
 
 **Why**: Ensures `wackyproc` and `wackypub` share identical tool resolution semantics, so an agent can spawn any tool via `wackyproc run <tool>` that it can run synchronously via `run_command command="<tool>"`.
 
+## D59: Elimination of `os.Setenv` process-global mutation for `AGENT2AGENT` / `WACKYPUB_CALL_CHAIN`
 
+Implemented in `pkg/agent/workspace.go`, `pkg/agent/agent_folder.go`, `pkg/agent/sdk.go`.
+
+**The problem**: `ValidateAgentTarget` historically used `os.Setenv(Agent2AgentEnvVar, ...)` and `os.Setenv(CallChainEnvVar, ...)` to mutate the process-global environment during turn execution, returning a `cleanup` callback that attempted to restore previous values via `os.Setenv(..., orig)`. This caused severe issues in long-lived or multi-threaded environments (such as `wackydiscord`, background session watchers, and concurrent SDK consumers):
+1. `os.Setenv` is process-global in the Go runtime. Concurrent goroutines handling turns for different agents or watching sessions collided on the shared environment variables.
+2. If `orig` was empty, `os.Setenv(key, "")` left empty environment variables rather than calling `os.Unsetenv`.
+3. Read-only SDK methods (`ReadSession`, `ReadMemory`, `RenderSystemPrompt`, `GetScratchpad`, `ListScratchpads`, `SearchScratchpad`) were erroneously calling `ValidateAgentTarget`, causing background reads (such as `wackydiscord`'s file watcher checking turn counts) to mutate the process environment and fail with false-positive deadlock errors if an agent was already in the call chain.
+
+**Core insight**: `AGENT2AGENT` / `WACKYPUB_CALL_CHAIN` only ever needs to exist in the environment of child subprocesses spawned via `run_command` (`cmd := exec.Command(...)`). The host Go process does not need to mutate its own OS environment at all.
+
+**Fix**:
+1. **Refactored `ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error)`**:
+   - Reads incoming `AGENT2AGENT` (or fallback `WACKYPUB_CALL_CHAIN`) from the process environment to inspect the parent caller chain.
+   - Enforces authorization (`WACKYPUB_ALLOWED_AGENTS`) and deadlock cycle prevention (`targetAgentID` in `meta.CallChain`).
+   - Calculates and returns the updated `*A2AMetadata` (appending `targetAgentID` to `CallChain`, computing `workspace_revision`, etc.).
+   - Performs **zero `os.Setenv` / `os.Unsetenv` calls** and requires no cleanup callback.
+2. **Subprocess Scoping in `FolderAgent.executeTool`**:
+   - `FolderAgent` stores the computed `A2AMeta *A2AMetadata`.
+   - When `executeTool` builds `cmd.Env`, it explicitly injects `AGENT2AGENT=<denseJSON>` and `WACKYPUB_CALL_CHAIN=<csv>` directly into the child process environment slice.
+3. **Exempted Read-Only SDK Methods**:
+   - Removed `ValidateAgentTarget` from all read-only inspection methods in `AgentSDK`, aligning strictly with D16 (which established that read-only inspection carries neither side effects nor deadlock risk).
+4. **Data Deduplication**:
+   - Clarified that `WACKYPUB_CALL_CHAIN` is a legacy subset of `AGENT2AGENT.call_chain`, exported only to `cmd.Env` for backward compatibility with external scripts.
+
+**Why**: Guarantees 100% goroutine-safe, stateless in-process execution across multi-agent daemons (`wackydiscord`) and SDK consumers without mutexes, environment pollution, or false-positive deadlock errors.
+## D60: Distinction between Cross-Agent Authorization (`WACKYPUB_ALLOWED_AGENTS`) and Deadlock Cycle Prevention (`CallChain`)
+
+Implemented in `pkg/agent/workspace.go`, `pkg/agent/sdk.go`.
+
+**Context**: D16 established two safety boundaries for cross-agent calls:
+1. Authorization: `WACKYPUB_ALLOWED_AGENTS` gates which peer agents an agent is allowed to invoke.
+2. Deadlock cycle prevention: `WACKYPUB_CALL_CHAIN` / `AGENT2AGENT.call_chain` rejects recursive re-entry (A -> B -> A).
+D16 explicitly exempted `InspectAgent` (and `wackypub workspace`) because diagnostic introspection only returns high-level structural metadata (turn count, tool list, model name, parse status), carrying no side effects or deadlock risks.
+
+**The problem**: D59 inadvertently exempted all read-only methods (`ReadSession`, `ReadMemory`, `RenderSystemPrompt`, `GetScratchpad`, `ListScratchpads`, `SearchScratchpad`) from `ValidateAgentTarget` in order to prevent background watchers from tripping `CallChain` cycle errors. However, doing so eliminated the `WACKYPUB_ALLOWED_AGENTS` authorization check entirely for read-only content operations. This created a severe cross-agent exfiltration vulnerability: an untrusted or prompt-injected agent could execute `run_command command="wackypub" args=["agent", "victim", "read-session"]` or `read-memory` to read any peer agent's private session history, long-term memory, or scratchpad files without authorization.
+
+**Fix**:
+1. Decoupled the checks into two distinct functions in `pkg/agent/workspace.go`:
+   - `AuthorizeAgentTarget(targetAgentID string) error`: Enforces `WACKYPUB_ALLOWED_AGENTS` against the caller's CWD (denies if caller is an agent directory and `targetAgentID` is not in its allowlist).
+   - `ValidateAgentTarget(targetAgentID string) (*A2AMetadata, error)`: Calls `AuthorizeAgentTarget`, enforces `CallChain` cycle prevention, and computes updated `*A2AMetadata`.
+2. Gated all private content read operations in `AgentSDK` with `AuthorizeAgentTarget(agentID)`:
+   - `ReadSession`, `ReadMemory`, `RenderSystemPrompt`, `GetScratchpad`, `ListScratchpads`, `SearchScratchpad` enforce `WACKYPUB_ALLOWED_AGENTS` authorization, while skipping `CallChain` checks.
+   - Background file watchers and non-agent daemons (like `wackydiscord`) running from the workspace root remain authorized and will never trip cycle errors.
+3. Gated all mutating and turn-generating operations in `AgentSDK` with `ValidateAgentTarget(agentID)`:
+   - `GenerateTurn`, `AddAndGenerateTurn`, `Prompt`, `CompactSession`, `AddUserTurn`, `AddMedia`, `CreateScratchpad`, `DeleteScratchpad`, `StripSignatures`.
+4. Kept `InspectAgent` and `ListAgents` as the sole exemptions, preserving D16's narrow exemption for structural workspace health diagnostics.
+
+**Why**: Restores complete cross-agent boundary security against unauthorized session/memory/scratchpad reads via `run_command`, while preserving full goroutine safety and zero-deadlock background reading.
 

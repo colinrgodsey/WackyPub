@@ -73,12 +73,11 @@ same implementation and documentation without duplicating either.
 ### Build & Test
 
 ```bash
-go build -o bin/wackypub .
-(cd tools/files-rw && go build -o ../../bin/files-rw .)
-(cd tools/wackyproc && go build -o ../../bin/wackyproc .)
-(cd tools/wackydiscord && go build -o ../../bin/wackydiscord .)
-go test ./...
-go vet ./...
+make build   # Builds wackypub, files-rw, wackyproc, wackydiscord into ./bin
+make test    # Runs unit tests for wackypub and all submodule tools
+make vet     # Runs go vet across wackypub and all submodule tools
+make fmt     # Formats all Go code
+make check   # Runs fmt, vet, and test in sequence
 ```
 
 `tools/files-rw` ([colinrgodsey/files-rw](https://github.com/colinrgodsey/files-rw)), `tools/wackyproc` ([colinrgodsey/wackyproc](https://github.com/colinrgodsey/wackyproc)), and `tools/wackydiscord` are git submodules - run `git submodule update --init` after cloning if they are empty.
@@ -86,7 +85,7 @@ go vet ./...
 ### Module Management
 
 ```bash
-go mod tidy
+make tidy    # Runs go mod tidy across wackypub and all submodule tools
 ```
 
 ### Manual/Live Testing
