@@ -351,9 +351,16 @@ func DeleteScratchpad(agentDir string, id string) error {
 	return nil
 }
 
-// GetScratchpad retrieves stored text by entry ID, optionally paginated by line range.
-// Rejects binary (.dat) entries outright per D48.
-func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (string, error) {
+// MaxScratchpadReadSizeBytes is the fallback maximum byte size for a single scratchpad read (200KB)
+// when runtime.json contextWindow is unset or <= 0.
+const MaxScratchpadReadSizeBytes = 200 * 1024
+
+// MaxScratchpadContextWindowFraction is the maximum fraction of contextWindow a single scratchpad read can consume (25%).
+const MaxScratchpadContextWindowFraction = 0.25
+
+// readScratchpadRaw retrieves raw stored text by entry ID, optionally paginated by line range,
+// without enforcing LLM contextWindow output size caps (used internally for zero-token macro expansion).
+func readScratchpadRaw(agentDir string, id string, skipLines *int, numLines *int) (string, error) {
 	filePath, _, isBinary, err := findScratchpadFile(agentDir, id)
 	if err != nil {
 		return "", err
@@ -395,6 +402,35 @@ func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (s
 	}
 
 	return strings.Join(lines[start:end], "\n"), nil
+}
+
+// GetScratchpad retrieves stored text by entry ID, optionally paginated by line range.
+// Rejects binary (.dat) entries outright per D48.
+// Enforces a hard output size cap per D63: refuses output exceeding 25% of runtime.json contextWindow
+// (or 200KB fallback when unset), suggesting line-based pagination or search.
+func GetScratchpad(agentDir string, id string, skipLines *int, numLines *int) (string, error) {
+	out, err := readScratchpadRaw(agentDir, id, skipLines, numLines)
+	if err != nil {
+		return "", err
+	}
+
+	runtimeCfg, _ := LoadRuntimeConfig(agentDir)
+	if runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
+		maxTokens := int(float64(runtimeCfg.ContextWindow) * MaxScratchpadContextWindowFraction)
+		if maxTokens < 1 {
+			maxTokens = 1
+		}
+		estTokens := len(out) / 4
+		if estTokens > maxTokens {
+			return "", fmt.Errorf("scratchpad entry %q output is %d bytes (~%d estimated tokens), which exceeds the single-read limit of %d tokens (25%% of %d contextWindow) - use skip_lines and num_lines or search_scratchpad for pagination", id, len(out), estTokens, maxTokens, runtimeCfg.ContextWindow)
+		}
+	} else {
+		if len(out) > MaxScratchpadReadSizeBytes {
+			return "", fmt.Errorf("scratchpad entry %q output is %d bytes, which exceeds the %d byte read limit - use skip_lines and num_lines or search_scratchpad for pagination", id, len(out), MaxScratchpadReadSizeBytes)
+		}
+	}
+
+	return out, nil
 }
 
 // ListScratchpads returns metadata items for all live entries in <agentDir>/scratchpad/ ordered by mtime ascending.
@@ -508,7 +544,7 @@ func ExpandScratchpadMacros(agentDir string, text string) (string, error) {
 			}
 		}
 
-		content, err := GetScratchpad(agentDir, id, skipLines, numLines)
+		content, err := readScratchpadRaw(agentDir, id, skipLines, numLines)
 		if err != nil {
 			firstErr = fmt.Errorf("scratchpad entry %q not found for macro expansion", id)
 			return match

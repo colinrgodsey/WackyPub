@@ -187,13 +187,33 @@ func CheckAndCompactSession(ctx context.Context, agentDir string, runtimeCfg *Ru
 		return false, err
 	}
 
-	// Calculate turns to compact based on compactCfg.CompactPct (D38)
+	// Calculate turns to compact based on compactCfg.CompactPct (D38/D63).
+	// D63: Reinterpret CompactPct as a percentage of estimated session tokens (not turn count).
 	pct := compactCfg.CompactPct
 	if pct <= 0 || pct > 100 {
 		pct = DefaultCompactionPct
 	}
 
-	numToCompact := int(float64(len(turns)) * (pct / 100.0))
+	preserveThinking := false
+	if runtimeCfg != nil {
+		preserveThinking = runtimeCfg.PreserveThinking
+	}
+
+	totalTokens := EstimateTokens(turns, preserveThinking)
+	targetTokens := int(float64(totalTokens) * (pct / 100.0))
+
+	numToCompact := 1
+	if totalTokens > 0 && targetTokens > 0 {
+		var accumulatedTokens int
+		for i, t := range turns {
+			turnTokens := EstimateTokens([]*genai.Content{t}, preserveThinking)
+			accumulatedTokens += turnTokens
+			numToCompact = i + 1
+			if accumulatedTokens >= targetTokens {
+				break
+			}
+		}
+	}
 	if numToCompact < 1 {
 		numToCompact = 1
 	}

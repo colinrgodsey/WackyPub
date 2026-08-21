@@ -143,6 +143,24 @@ func BuildADKAgentWithConfig(agentID string, renderedPrompt string, maxToolTurns
 					}, nil
 				}
 
+				// Mid-turn context budget check (D63)
+				// If accumulated tool context reaches or exceeds contextWindow on subsequent tool turns (modelCalls > 1),
+				// short-circuit early with a synthetic response so the next top-level turn gets a chance to trigger compaction.
+				if modelCalls > 1 && runtimeCfg != nil && runtimeCfg.ContextWindow > 0 {
+					estTokens := EstimateTokens(req.Contents, runtimeCfg.PreserveThinking)
+					if estTokens >= runtimeCfg.ContextWindow {
+						fmt.Fprintf(os.Stderr, "Warning: agent %q accumulated ~%d tokens in mid-turn tool context, reaching its context window limit (%d) - stopping early for compaction.\n", agentID, estTokens, runtimeCfg.ContextWindow)
+						return &model.LLMResponse{
+							Content: &genai.Content{
+								Role: "model",
+								Parts: []*genai.Part{
+									{Text: fmt.Sprintf("[Accumulated tool context reached ~%d tokens (exceeding %d contextWindow budget) - stopping turn early to allow session compaction. Send another message (e.g. \"continue\") to proceed.]", estTokens, runtimeCfg.ContextWindow)},
+								},
+							},
+						}, nil
+					}
+				}
+
 				// First model call is initial prompt; subsequent model calls are tool loop turns.
 				// Stop short rather than error: the caller (human or controlling agent) gets a
 				// clear, successful turn back with a hint to send another message to continue,

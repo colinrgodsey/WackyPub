@@ -28,9 +28,7 @@ const DefaultAgentGitignoreContent = `# Default WackyPub agent gitignore rules (
 *
 
 !.gitignore
-!/AGENTS.md
-!/IDENTITY.md
-!/MEMORY.md
+!/*.md
 !/runtime.json
 !/.env
 !/session.jsonl

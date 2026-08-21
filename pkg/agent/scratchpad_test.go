@@ -416,3 +416,68 @@ func TestListScratchpads_OldFormatRobustness(t *testing.T) {
 		t.Errorf("expected CreatedBy 'old_author', got %q", items[0].CreatedBy)
 	}
 }
+
+func TestGetScratchpad_ContextWindowCap(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// Write runtime.json with contextWindow = 8000 (25% cap = 2000 tokens ~ 8000 chars)
+	runtimeCfg := RuntimeConfig{ContextWindow: 8000}
+	cfgBytes, _ := json.Marshal(runtimeCfg)
+	if err := os.WriteFile(filepath.Join(agentDir, "runtime.json"), cfgBytes, 0644); err != nil {
+		t.Fatalf("failed to write runtime.json: %v", err)
+	}
+
+	// Create 100 lines of 100 chars each = ~10,000 chars (~2500 tokens)
+	lines := make([]string, 100)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("Line %03d: %s", i, strings.Repeat("x", 90))
+	}
+	content := strings.Join(lines, "\n")
+
+	entry, err := CreateScratchpad(agentDir, content, "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	// Full read should fail exceeding 25% of 8000 contextWindow (2000 tokens)
+	_, err = GetScratchpad(agentDir, entry.ID, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the single-read limit of 2000 tokens (25% of 8000 contextWindow)") {
+		t.Fatalf("expected contextWindow 25%% cap error, got: %v", err)
+	}
+
+	// Paginated read of 10 lines (~1000 chars ~ 250 tokens) should succeed
+	num := 10
+	paginated, err := GetScratchpad(agentDir, entry.ID, nil, &num)
+	if err != nil {
+		t.Fatalf("expected paginated read to succeed, got: %v", err)
+	}
+	if len(strings.Split(paginated, "\n")) != 10 {
+		t.Errorf("expected 10 lines, got %d", len(strings.Split(paginated, "\n")))
+	}
+
+	// Macro expansion (for tool piping) should still work for the full 10,000 char content
+	macroInput := fmt.Sprintf("<SCRATCHPAD_DATA id=%q />", entry.ID)
+	expanded, err := ExpandScratchpadMacros(agentDir, macroInput)
+	if err != nil {
+		t.Fatalf("ExpandScratchpadMacros failed: %v", err)
+	}
+	if expanded != content {
+		t.Errorf("expected macro to expand full content without cap")
+	}
+}
+
+func TestGetScratchpad_FallbackCap(t *testing.T) {
+	agentDir := t.TempDir()
+
+	// No runtime.json (contextWindow unset) -> 200KB fallback cap
+	largeData := strings.Repeat("A", MaxScratchpadReadSizeBytes+1024)
+	entry, err := CreateScratchpad(agentDir, largeData, "test")
+	if err != nil {
+		t.Fatalf("CreateScratchpad failed: %v", err)
+	}
+
+	_, err = GetScratchpad(agentDir, entry.ID, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the 204800 byte read limit") {
+		t.Fatalf("expected 200KB fallback cap error, got: %v", err)
+	}
+}

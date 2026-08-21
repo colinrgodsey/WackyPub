@@ -124,28 +124,48 @@ func ContentText(c *genai.Content) string {
 // includeThinking should match RuntimeConfig.PreserveThinking: when true,
 // Thought-marked part text is counted too, since it's actually replayed to
 // the model on every subsequent request for backends that preserve thinking.
+// Accounts for text, tool calls, tool responses, and inline images.
 func EstimateTokens(turns []*genai.Content, includeThinking bool) int {
-	totalChars := 0
-	imageTokens := 0
+	totalTokens := 0
 	for _, t := range turns {
 		if t == nil {
 			continue
 		}
-		if includeThinking {
-			totalChars += len(contentTextAll(t))
-		} else {
-			totalChars += len(ContentText(t))
-		}
+		chars := 0
 		for _, p := range t.Parts {
-			if p != nil && p.InlineData != nil && len(p.InlineData.Data) > 0 {
+			if p == nil {
+				continue
+			}
+			if p.Text != "" {
+				if includeThinking || !p.Thought {
+					chars += len(p.Text)
+				}
+			}
+			if p.FunctionCall != nil {
+				chars += len(p.FunctionCall.Name)
+				if p.FunctionCall.Args != nil {
+					b, _ := json.Marshal(p.FunctionCall.Args)
+					chars += len(b)
+				}
+			}
+			if p.FunctionResponse != nil {
+				chars += len(p.FunctionResponse.Name)
+				if p.FunctionResponse.Response != nil {
+					b, _ := json.Marshal(p.FunctionResponse.Response)
+					chars += len(b)
+				}
+			}
+			if p.InlineData != nil && len(p.InlineData.Data) > 0 {
 				rawLen := len(p.InlineData.Data)
 				b64Len := (rawLen + 2) / 3 * 4
-				imageTokens += b64Len / 150
+				totalTokens += b64Len / 150
 			}
 		}
+		if chars > 0 {
+			totalTokens += (chars + 3) / 4
+		}
 	}
-	// Heuristic: ~4 characters per token + per-image tokens
-	return (totalChars / 4) + imageTokens
+	return totalTokens
 }
 
 // contentTextAll extracts the concatenated text from all of a genai.Content's

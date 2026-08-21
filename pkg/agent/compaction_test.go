@@ -13,6 +13,8 @@ import (
 
 	"google.golang.org/adk/v2/agent"
 	"google.golang.org/adk/v2/model"
+	"google.golang.org/adk/v2/runner"
+	"google.golang.org/adk/v2/session"
 	"google.golang.org/adk/v2/tool"
 	"google.golang.org/adk/v2/tool/functiontool"
 	"google.golang.org/genai"
@@ -458,5 +460,140 @@ func TestCheckAndCompactSession_WirePayloadMatchesRealTurnShape(t *testing.T) {
 	}
 	if !sawTool {
 		t.Errorf("expected tool declaration %q in wire payload - this is exactly what the pre-D45 direct GenerateContent call never sent, got tools: %+v", "echo_tool", wire.Tools)
+	}
+}
+
+func TestTokenWeightedCompactionPercentage(t *testing.T) {
+	tempDir := filepath.Join(t.TempDir(), "test-token-weighted")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatalf("failed to create agent dir: %v", err)
+	}
+
+	// 6 turns: turn 3 is huge (~40,000 chars = ~10,000 tokens), others are small (~10 chars)
+	turns := []*genai.Content{
+		genai.NewContentFromText("u0", "user"),
+		genai.NewContentFromText("m0", "model"),
+		genai.NewContentFromText("u1", "user"),
+		genai.NewContentFromText("m1-huge: "+strings.Repeat("Z", 40000), "model"),
+		genai.NewContentFromText("u2", "user"),
+		genai.NewContentFromText("m2", "model"),
+	}
+	if err := WriteSessionTurns(tempDir, turns); err != nil {
+		t.Fatalf("failed writing session turns: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"compacted memory update"},"finish_reason":"stop"}]}`)
+	}))
+	defer srv.Close()
+
+	llmModel := NewOpenAIModel(&RuntimeConfig{Model: "test-model", Endpoint: srv.URL})
+	runtimeCfg := &RuntimeConfig{ContextWindow: 5000} // total is ~10,000 tokens, exceeds 5000
+	adkAgent := mustBuildTestADKAgent(t, tempDir, "system prompt", runtimeCfg, llmModel)
+
+	compacted, err := CheckAndCompactSession(context.Background(), tempDir, runtimeCfg, adkAgent, false)
+	if err != nil {
+		t.Fatalf("CheckAndCompactSession failed: %v", err)
+	}
+	if !compacted {
+		t.Fatalf("expected compaction to occur")
+	}
+
+	// Read remaining turns from disk - the huge turn (m1) must have been archived!
+	remaining, err := ReadSessionTurns(tempDir)
+	if err != nil {
+		t.Fatalf("ReadSessionTurns failed: %v", err)
+	}
+
+	// Clean remaining turns (merging any synthetic notice turn into the first real user turn)
+	cleanedRemaining := CleanSessionTurns(remaining)
+	if len(cleanedRemaining) != 2 {
+		t.Fatalf("expected 2 cleaned remaining turns (u2, m2) after token-weighted compaction, got %d (raw remaining: %d)", len(cleanedRemaining), len(remaining))
+	}
+	if cleanedRemaining[0].Role != "user" || !strings.Contains(ContentText(cleanedRemaining[0]), "u2") {
+		t.Errorf("expected first remaining turn to be u2, got: %+v", cleanedRemaining[0])
+	}
+	if cleanedRemaining[1].Role != "model" || !strings.Contains(ContentText(cleanedRemaining[1]), "m2") {
+		t.Errorf("expected second remaining turn to be m2, got: %+v", cleanedRemaining[1])
+	}
+}
+
+func TestMidTurnContextShortCircuit(t *testing.T) {
+	tempDir := filepath.Join(t.TempDir(), "test-short-circuit")
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		t.Fatalf("failed creating agent dir: %v", err)
+	}
+
+	// Server that returns a tool call to echo_tool on call 1, and final text on call 2
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		if callCount == 1 {
+			// Call echo_tool with a message
+			toolCallJSON := `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"echo_tool","arguments":"{\"text\":\"hello\"}"}}]},"finish_reason":"tool_calls"}]}`
+			io.WriteString(w, toolCallJSON)
+		} else {
+			io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"Done"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer srv.Close()
+
+	// Tool that returns huge output (~1000 chars = ~250 tokens > 50 token budget)
+	largeEchoTool, err := functiontool.New(functiontool.Config{
+		Name: "echo_tool",
+	}, func(ctx agent.Context, args d45EchoArgs) (map[string]any, error) {
+		return map[string]any{"output": strings.Repeat("Huge tool output data in mid-turn! ", 40)}, nil
+	})
+	if err != nil {
+		t.Fatalf("failed to create largeEchoTool: %v", err)
+	}
+
+	// contextWindow is small: 50 tokens (~200 chars)
+	runtimeCfg := &RuntimeConfig{
+		ContextWindow: 50,
+		Model:         "test-model",
+		Endpoint:      srv.URL,
+	}
+
+	mockModel := NewOpenAIModel(runtimeCfg)
+	adkAgent, err := BuildADKAgentWithConfig("short-circuit-bot", "System prompt", DefaultMaxToolTurns, runtimeCfg, mockModel, largeEchoTool)
+	if err != nil {
+		t.Fatalf("BuildADKAgentWithConfig failed: %v", err)
+	}
+
+	sessionSvc := session.InMemoryService()
+	createResp, err := sessionSvc.Create(context.Background(), &session.CreateRequest{
+		AppName:   "wackypub",
+		UserID:    "user",
+		SessionID: "sess-1",
+	})
+	if err != nil {
+		t.Fatalf("sessionSvc.Create failed: %v", err)
+	}
+
+	r, err := runner.New(runner.Config{
+		AppName:        "wackypub",
+		Agent:          adkAgent,
+		SessionService: sessionSvc,
+	})
+	if err != nil {
+		t.Fatalf("runner.New failed: %v", err)
+	}
+
+	prompt := genai.NewContentFromText("Hello", "user")
+	var outputText string
+	for event, err := range r.Run(context.Background(), "user", createResp.Session.ID(), prompt, agent.RunConfig{}) {
+		if err != nil {
+			t.Fatalf("runner.Run failed: %v", err)
+		}
+		if event != nil && event.Content != nil {
+			outputText += ExtractTextFromEvent(event)
+		}
+	}
+
+	if !strings.Contains(outputText, "stopping turn early to allow session compaction") {
+		t.Errorf("expected mid-turn context short circuit message, got: %q", outputText)
 	}
 }
